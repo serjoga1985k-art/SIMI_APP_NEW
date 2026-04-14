@@ -606,7 +606,7 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    file = st.file_uploader("📂 Завантажте Excel", type=["xlsx"])
+    file = st.file_uploader("📂 Завантажте Excel", type=["xlsx", "xlsb"])
     if file is None:
         st.info("Завантажте Excel-файл для початку роботи.")
         st.stop()
