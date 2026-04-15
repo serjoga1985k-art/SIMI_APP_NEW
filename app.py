@@ -726,84 +726,15 @@ def main():
             if st.button("✖ Жодного", key="tt_clear_all", use_container_width=True):
                 st.session_state["tt_multiselect"] = []
 
-       # ── Динамічний список ТТ за поточними фільтрами ──────────────
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🏪 Оберіть ТТ (клікабельна таблиця)")
-
-df_pre = df.copy()
-if year_val:
-    df_pre = df_pre[df_pre[col_year].isin(year_val)]
-if month_val:
-    df_pre = df_pre[df_pre[col_month].isin(month_val)]
-if level0_val:
-    df_pre = df_pre[df_pre[col_level0].isin(level0_val)]
-for col_e, vals_e in extra_filters.items():
-    df_pre = df_pre[df_pre[col_e].isin(vals_e)]
-
-visible_tts = sorted(df_pre[col_tt].dropna().unique(), key=str)
-
-if visible_tts:
-    st.sidebar.caption(f"Знайдено магазинів: **{len(visible_tts)}**")
-
-    # Пошук
-    tt_search = st.sidebar.text_input(
-        "🔎 Пошук ТТ", value="", placeholder="Введіть назву...", key="tt_search"
-    )
-
-    filtered_tts = (
-        [tt for tt in visible_tts if tt_search.lower() in str(tt).lower()]
-        if tt_search else visible_tts
-    )
-
-    # Створюємо DataFrame для гріда
-    tt_df = pd.DataFrame({"ТТ": filtered_tts})
-    tt_df["Вибрати"] = True  # за замовчуванням усі вибрані
-
-    # Якщо в session_state вже є попередній вибір — синхронізуємо
-    if "selected_tts" not in st.session_state:
-        st.session_state["selected_tts"] = set(filtered_tts)
-
-    # Оновлюємо статус чекбоксів згідно з session_state
-    tt_df["Вибрати"] = tt_df["ТТ"].apply(lambda x: x in st.session_state["selected_tts"])
-
-    # Відображаємо editable грид
-    edited_df = st.sidebar.data_editor(
-        tt_df,
-        hide_index=True,
-        column_config={
-            "ТТ": st.column_config.TextColumn("Магазин", disabled=True, width="medium"),
-            "Вибрати": st.column_config.CheckboxColumn(
-                "✓",
-                default=True,
-                width="small",
-                help="Поставте галочку, щоб включити магазин"
-            )
-        },
-        use_container_width=True,
-        height=min(400, len(filtered_tts) * 35 + 40),  # динамічна висота
-        key="tt_grid_editor"
-    )
-
-    # Збираємо вибрані ТТ
-    tt_val = edited_df[edited_df["Вибрати"]]["ТТ"].tolist()
-
-    # Оновлюємо session_state
-    st.session_state["selected_tts"] = set(tt_val)
-
-    # Кнопки "Всі / Жодного"
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        if st.button("✅ Всі", key="tt_select_all", use_container_width=True):
-            st.session_state["selected_tts"] = set(filtered_tts)
-            st.rerun()
-    with col2:
-        if st.button("✖ Жодного", key="tt_clear_all", use_container_width=True):
-            st.session_state["selected_tts"] = set()
-            st.rerun()
-
-else:
-    st.sidebar.warning("Немає ТТ за обраними фільтрами.")
-    tt_val = []
+        tt_val = st.sidebar.multiselect(
+            "Оберіть ТТ:",
+            options=filtered_tts,
+            default=st.session_state.get("tt_multiselect", []),
+            key="tt_multiselect",
+        )
+    else:
+        st.sidebar.warning("Немає ТТ за обраними фільтрами.")
+        tt_val = []
 
     st.sidebar.markdown("---")
 
