@@ -139,7 +139,7 @@ def render_article_block(title, table_df, chart_title,
     td = "border:1px solid #ccc;padding:3px 7px;text-align:right;font-size:0.78rem;"
     tl = "border:1px solid #ccc;padding:3px 7px;font-size:0.78rem;font-weight:600;white-space:nowrap;"
 
-    # Таблиця показників
+    # HTML таблиця
     html = f"""
     <div style="margin-top:20px; margin-bottom:4px;">
       <span style="background:{GREEN_HDR};color:white;font-weight:700;padding:4px 14px;
@@ -166,7 +166,7 @@ def render_article_block(title, table_df, chart_title,
     st.markdown(html, unsafe_allow_html=True)
 
     # Метрики
-    if (df_filtered is not None and col_tt and col_article and col_value and col_plf and col_month):
+    if df_filtered is not None and col_tt and col_article and col_value and col_plf and col_month:
         facts = [table_df.loc[m, "Fact"] for m in range(1, 13)]
         non_zero_facts = [f for f in facts if f != 0]
         avg_monthly = np.mean(non_zero_facts) if non_zero_facts else 0
