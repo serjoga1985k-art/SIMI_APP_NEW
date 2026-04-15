@@ -283,6 +283,32 @@ def render_article_block(title, table_df, chart_title,
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
+        # ── Слайсер під графіком ─────────────────────────────
+    if df_filtered is not None and col_tt:
+        st.markdown("<div class='block-sep'></div>", unsafe_allow_html=True)
+        st.subheader("🔎 Слайсер фільтрів")
+
+        # Фільтр по ТТ
+        all_tts = df_filtered[col_tt].dropna().unique().tolist()
+        selected_tts = st.multiselect("🏪 Магазини (TT)", all_tts, default=all_tts)
+
+        # Додатковий фільтр по року
+        selected_year = None
+        if "Year" in df_filtered.columns:
+            years = sorted(df_filtered["Year"].dropna().unique())
+            selected_year = st.selectbox("📅 Рік", years)
+
+        # Приклад додаткових фільтрів (місто, формат)
+        extra_filters = {}
+        if "Місто" in df_filtered.columns:
+            cities = sorted(df_filtered["Місто"].dropna().unique())
+            extra_filters["city"] = st.multiselect("🌆 Місто", cities, default=cities)
+        if "Формат ТО" in df_filtered.columns:
+            formats = sorted(df_filtered["Формат ТО"].dropna().unique())
+            extra_filters["format"] = st.multiselect("🏷️ Формат", formats, default=formats)
+
+        return selected_tts, selected_year, extra_filters
+
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
@@ -828,16 +854,28 @@ def main():
             col_month, col_value, col_plf, article, tt_val, group_factors
         )
         render_article_block(
-            title=article,
-            table_df=tdf,
-            chart_title=f"Аналіз середньомісячного показника — {article}",
-            df_filtered=df_filtered,
-            col_tt=col_tt,
-            col_article=col_article,
-            col_month=col_month,
-            col_value=col_value,
-            col_plf=col_plf,
-        )
+                selected_tts, selected_year, extra_filters = render_article_block(
+        selected_article, table_df, "Аналіз", df_filtered,
+        col_tt, col_article, col_month, col_value, col_plf
+    )
+
+    # Застосування фільтрів
+    df_filtered2 = df_filtered.copy()
+    if selected_year:
+        df_filtered2 = df_filtered2[df_filtered2[col_year] == selected_year]
+    if selected_tts:
+        df_filtered2 = df_filtered2[df_filtered2[col_tt].isin(selected_tts)]
+    if "city" in extra_filters:
+        df_filtered2 = df_filtered2[df_filtered2["Місто"].isin(extra_filters["city"])]
+    if "format" in extra_filters:
+        df_filtered2 = df_filtered2[df_filtered2["Формат ТО"].isin(extra_filters["format"])]
+
+    # Перерахунок таблиці з урахуванням фільтрів
+    table_df2 = build_article_monthly(df, df_filtered2, col_tt, col_article,
+                                      col_month, col_value, col_plf,
+                                      selected_article, selected_tts, [])
+    st.markdown("### 📈 Дані після застосування фільтрів")
+    st.dataframe(table_df2)
 
     # ── Зведена таблиця по статтях ───────────────────────────────
     st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
