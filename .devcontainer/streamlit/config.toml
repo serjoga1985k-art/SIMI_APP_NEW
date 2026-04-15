@@ -1,0 +1,11 @@
+[client]
+toolbarMode = "minimal"
+
+[logger]
+level = "error"
+
+[server]
+headless = true
+runOnSave = true
+port = 8501
+enableWebsocketCompression = false
