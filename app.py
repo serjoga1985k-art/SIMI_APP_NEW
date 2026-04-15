@@ -283,6 +283,62 @@ def render_article_block(title, table_df, chart_title,
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
+    if df_filtered is not None and col_tt and col_article and all_tts is not None:
+        st.markdown("**🏪 Фільтр магазинів для цього артикулу**", unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([4, 1, 1])
+        with col1:
+            selected_tts_local = st.multiselect(
+                "Оберіть ТТ (впливає на графік, Average та дельту)",
+                options=all_tts,
+                default=all_tts,  # за замовчуванням усі
+                key=f"tt_local_{title}",  # унікальний ключ для кожного артикулу
+                placeholder="Всі магазини",
+                help="Зміна фільтру оновлює графік та метрики тільки для обраних магазинів"
+            )
+        with col2:
+            if st.button("✅ Всі", key=f"all_tt_{title}", use_container_width=True):
+                st.session_state[f"tt_local_{title}"] = all_tts
+                st.rerun()
+        with col3:
+            if st.button("✖ Жодного", key=f"none_tt_{title}", use_container_width=True):
+                st.session_state[f"tt_local_{title}"] = []
+                st.rerun()
+
+        # Якщо нічого не обрано — показуємо всі
+        if not selected_tts_local:
+            selected_tts_local = all_tts
+    else:
+        selected_tts_local = None
+
+    # ── Оновлюємо таблицю з урахуванням локального фільтру ─────────────
+    tdf = build_article_monthly(
+        df, df_filtered, col_tt, col_article, col_month, col_value, col_plf,
+        title, selected_tts_local, group_factors  # <-- передаємо selected_tts_local
+    )
+
+    # ... (вся HTML-таблиця та метрики залишаються як були — вони вже використовують оновлений tdf)
+
+    # ── Plotly Chart (використовує оновлений tdf) ─────────────────────
+    x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=x_axis, y=tdf["Plan"], name="План", marker_color=GREY))
+    fig.add_trace(go.Bar(x=x_axis, y=tdf["Fact"], name="Факт", marker_color=PURPLE))
+    fig.add_trace(go.Scatter(x=x_axis, y=tdf["Average"], name="Average",
+                             line=dict(color=RED_LINE, width=3)))
+    fig.add_trace(go.Scatter(x=x_axis, y=tdf["Delta"], name="Дельта",
+                             line=dict(color=YELLOW, dash="dot")))
+
+    fig.update_layout(
+        height=350,
+        margin=dict(t=30, b=20, l=10, r=10),
+        barmode="group",
+        hovermode="x unified",
+        title=f"{chart_title} — вибрано {len(selected_tts_local) if selected_tts_local else 'всі'} ТТ"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    return tdf  # повертаємо оновлену таблицю
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
