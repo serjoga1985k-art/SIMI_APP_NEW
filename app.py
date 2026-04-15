@@ -122,7 +122,16 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
 
     return merged
 def set_single_store(store):
-    st.session_state["tt_multiselect"] = [store]
+    current = st.session_state.get("tt_multiselect", [])
+
+    # якщо Shift/Ctrl логіки нема — просто toggle
+    if store in current:
+        current.remove(store)
+    else:
+        current.append(store)
+
+    st.session_state["tt_multiselect"] = current
+    st.rerun()
 
 def render_article_block(title, table_df, chart_title,
                          df_filtered=None, col_tt=None, col_article=None,
