@@ -124,8 +124,64 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
 
 
 def render_article_block(title, table_df, chart_title,
-                         df_filtered=None, col_tt=None, col_article=None,
-                         col_month=None, col_value=None, col_plf=None):
+                         df, df_filtered, col_tt, col_article,
+                         col_month, col_value, col_plf, group_factors,
+                         all_visible_tts):
+    
+    # ── Слайсер по ТТ під графіком (аналогічно сайдбару) ─────────────
+    st.markdown("**🏪 Фільтр магазинів для цього артикулу**", unsafe_allow_html=True)
+    
+    # Ініціалізація session_state
+    session_key = f"local_tt_{title}"
+    if session_key not in st.session_state:
+        st.session_state[session_key] = all_visible_tts.copy()
+
+    # Пошук
+    search_key = f"search_{title}"
+    tt_search = st.text_input(
+        "🔎 Пошук ТТ", 
+        value="", 
+        placeholder="Введіть назву магазину...",
+        key=f"search_input_{title}"
+    )
+
+    # Фільтрація за пошуком
+    filtered_tts = [
+        tt for tt in all_visible_tts 
+        if tt_search.lower() in str(tt).lower()
+    ] if tt_search else all_visible_tts
+
+    # Кнопки Всі / Жодного
+    col1, col2, col3 = st.columns([4, 1.1, 1.1])
+    with col1:
+        selected_tts_local = st.multiselect(
+            label="",
+            options=filtered_tts,
+            default=st.session_state[session_key],
+            key=session_key,
+            placeholder="Оберіть магазини...",
+            help="Зміна фільтру оновлює графік, Average та дельту"
+        )
+    with col2:
+        if st.button("✅ Всі", key=f"all_btn_{title}", use_container_width=True):
+            st.session_state[session_key] = all_visible_tts.copy()
+            st.rerun()
+    with col3:
+        if st.button("✖ Жодного", key=f"none_btn_{title}", use_container_width=True):
+            st.session_state[session_key] = []
+            st.rerun()
+
+    # Якщо нічого не вибрано — показуємо всі
+    if not selected_tts_local:
+        selected_tts_local = all_visible_tts
+
+    # ── Будуємо дані з урахуванням локального фільтру ─────────────
+    tdf = build_article_monthly(
+        df, df_filtered, col_tt, col_article, col_month,
+        col_value, col_plf, title, selected_tts_local, group_factors
+    )
+
+    # ── HTML таблиця ─────────────────────────────────────────────
     rows = {
         "План":    ("Plan",    "#ffffff", "#333333"),
         "Факт":    ("Fact",    "#e8d5f5", PURPLE),
@@ -153,7 +209,7 @@ def render_article_block(title, table_df, chart_title,
       </tr></thead><tbody>
     """
     for label, (col, bg, color) in rows.items():
-        vals = [table_df.loc[m, col] for m in range(1, 13)]
+        vals = [tdf.loc[m, col] for m in range(1, 13)]
         total = sum(vals)
         html += f'<tr style="background:{bg};">'
         html += f'<td style="{tl}color:{color};">{label}</td>'
