@@ -283,6 +283,78 @@ def render_article_block(title, table_df, chart_title,
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
+        # ── СЛАЙСЕР МАГАЗИНІВ (як Excel) ─────────────────────────────
+    if df_filtered is not None and col_tt and col_article:
+
+        st.markdown("### 🏪 Фільтр магазинів (слайсер)")
+
+        # список магазинів по статті
+        df_art = df_filtered[df_filtered[col_article] == title]
+        all_tts = sorted(df_art[col_tt].dropna().unique(), key=str)
+
+        if all_tts:
+
+            # пошук
+            search = st.text_input(
+                f"🔎 Пошук магазину ({title})",
+                key=f"search_{title}"
+            )
+
+            filtered_tts = [
+                tt for tt in all_tts
+                if search.lower() in str(tt).lower()
+            ] if search else all_tts
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("✅ Всі", key=f"all_{title}", use_container_width=True):
+                    st.session_state[f"tt_local_{title}"] = filtered_tts
+            with col2:
+                if st.button("✖ Очистити", key=f"none_{title}", use_container_width=True):
+                    st.session_state[f"tt_local_{title}"] = []
+
+            selected_local_tts = st.multiselect(
+                "Оберіть магазини:",
+                options=filtered_tts,
+                default=st.session_state.get(f"tt_local_{title}", filtered_tts),
+                key=f"tt_local_{title}"
+            )
+
+            # ── ПЕРЕБУДОВА ГРАФІКА ПО ВИБРАНИХ ТТ ─────────────────
+            if selected_local_tts:
+
+                df_local = df_art[df_art[col_tt].isin(selected_local_tts)]
+
+                tdf_local = build_article_monthly(
+                    df=df_filtered,
+                    df_filtered=df_local,
+                    col_tt=col_tt,
+                    col_article=col_article,
+                    col_month=col_month,
+                    col_value=col_value,
+                    col_plf=col_plf,
+                    selected_art=title,
+                    selected_tts=selected_local_tts,
+                    group_factors=[]
+                )
+
+                fig2 = go.Figure()
+                x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
+
+                fig2.add_trace(go.Bar(x=x_axis, y=tdf_local["Plan"], name="План", marker_color=GREY))
+                fig2.add_trace(go.Bar(x=x_axis, y=tdf_local["Fact"], name="Факт", marker_color=PURPLE))
+                fig2.add_trace(go.Scatter(x=x_axis, y=tdf_local["Average"], name="Average",
+                                          line=dict(color=RED_LINE, width=3)))
+                fig2.add_trace(go.Scatter(x=x_axis, y=tdf_local["Delta"], name="Дельта",
+                                          line=dict(color=YELLOW, dash="dot")))
+
+                fig2.update_layout(
+                    height=350,
+                    barmode="group",
+                    hovermode="x unified"
+                )
+
+                st.plotly_chart(fig2, use_container_width=True)
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
