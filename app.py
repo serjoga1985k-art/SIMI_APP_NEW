@@ -62,7 +62,7 @@ def get_month_num(series):
 @st.cache_data
 def precompute_global_avg_std(df_hash, group_factors_key, col_article, col_value, col_plf):
     """
-    Передаємо хеш DataFrame щоб cache_data міг серіалізувати ��люч.
+    Передаємо хеш DataFrame щоб cache_data міг серіалізувати ключ.
     Повертаємо global_avg_std як DataFrame.
     """
     df = st.session_state["_df_cache"]
@@ -186,7 +186,7 @@ def render_article_block(title, table_df, col_tt, col_article,
     """
     Рендерить таблицю + метрики + графік для однієї статті.
     title     — значення статті (не назва колонки!)
-    col_*     — наз��и колонок
+    col_*     — назви колонок
     """
     rows = {
         "План":    ("Plan",    "#ffffff", "#333333"),
@@ -306,7 +306,7 @@ def render_article_block(title, table_df, col_tt, col_article,
     """
     st.markdown(metrics_html, unsafe_allow_html=True)
 
-    # ── Plotly Chart ─────────────────────────────────────────────
+    # ── Plotly Chart (зменшена висота) ─────────────────────────────────────────────
     x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
     fig = go.Figure()
     fig.add_trace(go.Bar(x=x_axis, y=table_df["Plan"],    name="План",    marker_color=GREY))
@@ -316,22 +316,32 @@ def render_article_block(title, table_df, col_tt, col_article,
     fig.add_trace(go.Scatter(x=x_axis, y=table_df["Delta"],   name="Дельта",
                              line=dict(color=YELLOW, dash="dot")))
     fig.update_layout(
-        height=350,
-        margin=dict(t=30, b=20, l=10, r=10),
+        height=280,
+        margin=dict(t=20, b=15, l=10, r=10),
         barmode="group",
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── TT SELECTOR TABS BELOW CHART ──────────────────────────────────
-    st.markdown('<div style="margin-top:15px;"></div>', unsafe_allow_html=True)
-    st.markdown("**🏪 Швидкий перемикач магазинів (ТТ):**")
-    
+    # ── TT SELECTOR - КОМПАКТНІ КНОПКИ ──────────────────────────────────────────────
     article_data = df_filtered[df_filtered[col_article] == title].copy()
     available_tts = sorted(article_data[col_tt].dropna().unique(), key=str)
     
     if available_tts:
-        cols_per_row = 10
+        st.markdown("""
+        <style>
+        .tt-label-shop {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #2c3e50;
+            margin-bottom: 6px;
+            display: block;
+        }
+        </style>
+        <span class="tt-label-shop">🏪 Магазини:</span>
+        """, unsafe_allow_html=True)
+        
+        cols_per_row = 15
         num_rows = (len(available_tts) + cols_per_row - 1) // cols_per_row
         
         for row_idx in range(num_rows):
@@ -343,7 +353,12 @@ def render_article_block(title, table_df, col_tt, col_article,
                 with cols[col_idx]:
                     tt_val = available_tts[tt_idx]
                     btn_key = f"tt_btn_{title}_{tt_val}".replace(" ", "_").replace("/", "_")
-                    if st.button(f"{tt_val}", key=btn_key, use_container_width=True):
+                    
+                    if st.button(
+                        f"{tt_val}",
+                        key=btn_key,
+                        use_container_width=True
+                    ):
                         st.session_state[f"selected_tt_{title}"] = tt_val
                         st.rerun()
     else:
