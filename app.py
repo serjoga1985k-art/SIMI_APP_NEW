@@ -283,7 +283,17 @@ def render_article_block(title, table_df, chart_title,
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
-
+def render_clickable_tt_list(tt_list):
+    st.markdown("#### 📍 Швидкий вибір магазину:")
+    
+    # Створюємо сітку для кнопок (наприклад, по 5 у ряд)
+    cols = st.columns(5)
+    for i, tt_name in enumerate(tt_list):
+        with cols[i % 5]:
+            # Якщо кнопка натиснута, записуємо назву ТТ у session_state
+            if st.button(str(tt_name), key=f"btn_{tt_name}", use_container_width=True):
+                st.session_state["selected_tt_from_list"] = tt_name
+                st.rerun()
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                  col_plf, articles_to_show, tt_val, group_factors, metric_col,
