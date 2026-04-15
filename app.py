@@ -137,6 +137,7 @@ def render_article_block(title, table_df, chart_title,
           "padding:4px 8px;text-align:center;font-size:0.78rem;")
     td = "border:1px solid #ccc;padding:3px 7px;text-align:right;font-size:0.78rem;"
     tl = "border:1px solid #ccc;padding:3px 7px;font-size:0.78rem;font-weight:600;white-space:nowrap;"
+    
     html = f"""
     <div style="margin-top:20px; margin-bottom:4px;">
       <span style="background:{GREEN_HDR};color:white;font-weight:700;padding:4px 14px;
@@ -175,11 +176,13 @@ def render_article_block(title, table_df, chart_title,
         pct_str = (f"{'+' if pct_vs_plan >= 0 else ''}{pct_vs_plan:.1f}%"
                    if pct_vs_plan is not None else "—")
         pct_color = RED_LINE if (pct_vs_plan or 0) > 0 else GREEN_HDR
+
         sub = df_filtered[
             (df_filtered[col_article] == title) &
             (df_filtered[col_plf] == "F")
         ].copy()
         sub[col_value] = pd.to_numeric(sub[col_value], errors="coerce")
+
         best_pills = ""
         worst_pills = ""
         if not sub.empty and col_tt in sub.columns:
@@ -205,6 +208,7 @@ def render_article_block(title, table_df, chart_title,
                 return pills
             best_pills = make_pills(tt_totals.head(n), "#1b5e20", "#e8f5e9")
             worst_pills = make_pills(tt_totals.tail(n).iloc[::-1], "#7f0000", "#ffebee")
+
         delta_color = RED_LINE if total_delta > 0 else GREEN_HDR
         metrics_html = f"""
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;
@@ -262,15 +266,29 @@ def render_article_block(title, table_df, chart_title,
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── НОВИЙ БЛОК: Список магазинів під графіком ─────────────────────
-    st.markdown("**🏪 Список магазинів у аналізі статті**")
+    # ── КЛІКАБЕЛЬНИЙ список магазинів під графіком ─────────────────────
+    st.markdown("**🏪 Список магазинів у аналізі статті** (натисни на магазин для фільтру)")
     if df_filtered is not None and col_tt and col_article:
         article_df = df_filtered[df_filtered[col_article] == title]
         stores_list = sorted(article_df[col_tt].dropna().unique().tolist())
+        
         if stores_list:
             with st.expander(f"Показати всі магазини ({len(stores_list)} шт.)", expanded=False):
-                stores_text = ", ".join([str(s) for s in stores_list])
-                st.write(stores_text)
+                # Розбиваємо на стовпці для зручності
+                num_cols = 4 if len(stores_list) > 12 else 3
+                cols = st.columns(num_cols)
+                
+                for idx, store in enumerate(stores_list):
+                    with cols[idx % num_cols]:
+                        if st.button(
+                            str(store),
+                            key=f"store_btn_{title}_{idx}",
+                            use_container_width=True,
+                            type="secondary"
+                        ):
+                            # Фільтруємо весь дашборд тільки на цей магазин
+                            st.session_state["tt_multiselect"] = [store]
+                            st.rerun()
         else:
             st.info("Немає даних по магазинах для цієї статті.")
     else:
