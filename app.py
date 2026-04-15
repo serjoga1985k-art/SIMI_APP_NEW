@@ -121,7 +121,8 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
     merged["Delta"] = merged["Fact"] - merged["Average"]
 
     return merged
-
+def set_single_store(store):
+    st.session_state["tt_multiselect"] = [store]
 
 def render_article_block(title, table_df, chart_title,
                          df_filtered=None, col_tt=None, col_article=None,
