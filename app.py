@@ -393,7 +393,7 @@ tdf = build_article_monthly(
     local_tt if local_tt else tt_val,
     group_factors
 )
-        vals = [article] + [tdf.loc[m, metric_col] for m in range(1, 13)]
+vals = [article] + [tdf.loc[m, metric_col] for m in range(1, 13)]
         vals.append(sum(tdf.loc[m, metric_col] for m in range(1, 13)))
         for ci, v in enumerate(vals, 1):
             c = ws_p.cell(row=ri, column=ci, value=v)
