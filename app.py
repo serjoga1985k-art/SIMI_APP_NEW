@@ -137,7 +137,7 @@ def render_article_block(title, table_df, chart_title,
           "padding:4px 8px;text-align:center;font-size:0.78rem;")
     td = "border:1px solid #ccc;padding:3px 7px;text-align:right;font-size:0.78rem;"
     tl = "border:1px solid #ccc;padding:3px 7px;font-size:0.78rem;font-weight:600;white-space:nowrap;"
-    
+
     html = f"""
     <div style="margin-top:20px; margin-bottom:4px;">
       <span style="background:{GREEN_HDR};color:white;font-weight:700;padding:4px 14px;
@@ -163,14 +163,93 @@ def render_article_block(title, table_df, chart_title,
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
-    # Метрики над діаграмою
+    # ── Метрики над діаграмою ────────────────────────────────────
     if (df_filtered is not None and col_tt and col_article
             and col_value and col_plf and col_month):
-        # ... (весь код метрик залишається без змін — я його не повторюю для економії місця) ...
+        facts = [table_df.loc[m, "Fact"] for m in range(1, 13)]
+        non_zero_facts = [f for f in facts if f != 0]
+        avg_monthly = np.mean(non_zero_facts) if non_zero_facts else 0
+        total_fact = sum(facts)
+        total_plan = sum(table_df.loc[m, "Plan"] for m in range(1, 13))
+        total_delta = total_fact - total_plan
+        pct_vs_plan = ((total_fact / total_plan - 1) * 100) if total_plan != 0 else None
+        pct_str = (f"{'+' if pct_vs_plan >= 0 else ''}{pct_vs_plan:.1f}%"
+                   if pct_vs_plan is not None else "—")
+        pct_color = RED_LINE if (pct_vs_plan or 0) > 0 else GREEN_HDR
 
+        sub = df_filtered[
+            (df_filtered[col_article] == title) &
+            (df_filtered[col_plf] == "F")
+        ].copy()
+        sub[col_value] = pd.to_numeric(sub[col_value], errors="coerce")
+
+        best_pills = ""
+        worst_pills = ""
+        if not sub.empty and col_tt in sub.columns:
+            tt_totals = (
+                sub.groupby(col_tt)[col_value]
+                .sum()
+                .dropna()
+                .sort_values()
+            )
+            n = min(3, len(tt_totals))
+            def make_pills(series, color, bg):
+                pills = ""
+                for tt, val in series.items():
+                    sign = "+" if val > 0 else ""
+                    val_fmt = f"{val:,.0f}".replace(",", " ")
+                    pills += (
+                        f'<span style="display:inline-block;background:{bg};color:{color};'
+                        f'border-radius:4px;padding:2px 9px;margin:2px 3px;font-size:0.75rem;'
+                        f'font-weight:600;white-space:nowrap;">'
+                        f'{tt}&nbsp;<span style="opacity:.7;font-weight:400;">'
+                        f'({sign}{val_fmt})</span></span>'
+                    )
+                return pills
+            best_pills = make_pills(tt_totals.head(n), "#1b5e20", "#e8f5e9")
+            worst_pills = make_pills(tt_totals.tail(n).iloc[::-1], "#7f0000", "#ffebee")
+
+        delta_color = RED_LINE if total_delta > 0 else GREEN_HDR
+        metrics_html = f"""
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;
+                    background:#f9f6ff;border:1px solid #d0baf5;border-radius:6px;
+                    padding:10px 16px;margin:6px 0 10px 0;">
+          <div style="min-width:130px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
+                        letter-spacing:.04em;">Серед. Fact / міс.</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{PURPLE};">
+              {avg_monthly:,.0f}
+            </div>
+          </div>
+          <div style="min-width:130px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
+                        letter-spacing:.04em;">Δ Fact − Plan</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{delta_color};">
+              {('+' if total_delta > 0 else '')}{total_delta:,.0f}
+            </div>
+          </div>
+          <div style="min-width:100px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
+                        letter-spacing:.04em;">% до плану</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{pct_color};">
+              {pct_str}
+            </div>
+          </div>
+          <div style="flex:1;min-width:220px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
+                        letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
+            <div>{best_pills if best_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
+          </div>
+          <div style="flex:1;min-width:220px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
+                        letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div>
+            <div>{worst_pills if worst_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
+          </div>
+        </div>
+        """
         st.markdown(metrics_html, unsafe_allow_html=True)
 
-    # Plotly Chart
+    # ── Plotly Chart ─────────────────────────────────────────────
     x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
     fig = go.Figure()
     fig.add_trace(go.Bar(x=x_axis, y=table_df["Plan"], name="План", marker_color=GREY))
@@ -187,7 +266,7 @@ def render_article_block(title, table_df, chart_title,
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # КЛІКАБЕЛЬНИЙ список магазинів
+    # ── КЛІКАБЕЛЬНИЙ список магазинів ─────────────────────────────
     st.markdown("**🏪 Список магазинів у аналізі статті** (натисни на магазин для фільтру)")
     if df_filtered is not None and col_tt and col_article:
         article_df = df_filtered[df_filtered[col_article] == title]
@@ -197,7 +276,6 @@ def render_article_block(title, table_df, chart_title,
             with st.expander(f"Показати всі магазини ({len(stores_list)} шт.)", expanded=False):
                 num_cols = 4 if len(stores_list) > 12 else 3
                 cols = st.columns(num_cols)
-                
                 for idx, store in enumerate(stores_list):
                     with cols[idx % num_cols]:
                         st.button(
