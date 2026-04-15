@@ -283,91 +283,6 @@ def render_article_block(title, table_df, chart_title,
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
-    # ── СЛАЙСЕР ТТ ПІД ГРАФІКОМ ─────────────────────────────
-st.markdown("### 🏪 ТТ за поточними фільтрами")
-
-df_art = df_filtered[df_filtered[col_article] == title]
-all_tts = sorted(df_art[col_tt].dropna().unique(), key=str)
-
-if all_tts:
-
-    st.caption(f"Знайдено: {len(all_tts)} магазинів")
-
-    search = st.text_input(
-        "🔎 Пошук ТТ",
-        key=f"search_{title}"
-    )
-
-    filtered_tts = [
-        tt for tt in all_tts
-        if search.lower() in str(tt).lower()
-    ] if search else all_tts
-
-    state_key = f"tt_local_{title}"
-
-    if state_key not in st.session_state:
-        st.session_state[state_key] = set(filtered_tts)
-
-    # Кнопки
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("✅ Всі", key=f"all_{title}", use_container_width=True):
-            st.session_state[state_key] = set(filtered_tts)
-
-    with c2:
-        if st.button("✖ Жодного", key=f"none_{title}", use_container_width=True):
-            st.session_state[state_key] = set()
-
-    # Слайсер (grid як в Excel)
-    selected_local_tts = []
-
-    cols = st.columns(4)  # 👉 кількість колонок слайсера
-    for i, tt in enumerate(filtered_tts):
-        col = cols[i % 4]
-
-        with col:
-            checked = tt in st.session_state[state_key]
-
-            if st.checkbox(
-                str(tt),
-                value=checked,
-                key=f"{state_key}_{tt}"
-            ):
-                selected_local_tts.append(tt)
-
-    st.session_state[state_key] = set(selected_local_tts)
-
-    # ── Перебудова графіка ─────────────────────────
-    if selected_local_tts:
-
-        df_local = df_art[df_art[col_tt].isin(selected_local_tts)]
-
-        tdf_local = build_article_monthly(
-            df=df_filtered,
-            df_filtered=df_local,
-            col_tt=col_tt,
-            col_article=col_article,
-            col_month=col_month,
-            col_value=col_value,
-            col_plf=col_plf,
-            selected_art=title,
-            selected_tts=selected_local_tts,
-            group_factors=[]
-        )
-
-        fig2 = go.Figure()
-        x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
-
-        fig2.add_trace(go.Bar(x=x_axis, y=tdf_local["Plan"], name="План", marker_color=GREY))
-        fig2.add_trace(go.Bar(x=x_axis, y=tdf_local["Fact"], name="Факт", marker_color=PURPLE))
-        fig2.add_trace(go.Scatter(x=x_axis, y=tdf_local["Average"], name="Average",
-                                  line=dict(color=RED_LINE, width=3)))
-        fig2.add_trace(go.Scatter(x=x_axis, y=tdf_local["Delta"], name="Дельта",
-                                  line=dict(color=YELLOW, dash="dot")))
-
-        fig2.update_layout(height=350, barmode="group", hovermode="x unified")
-
-        st.plotly_chart(fig2, use_container_width=True)
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
@@ -412,9 +327,8 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         scw(ws_p, ci, 11)
 
     for ri, article in enumerate(articles_to_show, 2):
-        tdf = build_article_monthly(
-    df, df_filtered, col_tt, col_article,
-    col_month, col_value, col_plf, article, None, group_factors)
+        tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
+                                    col_month, col_value, col_plf, article, tt_val, group_factors)
         vals = [article] + [tdf.loc[m, metric_col] for m in range(1, 13)]
         vals.append(sum(tdf.loc[m, metric_col] for m in range(1, 13)))
         for ci, v in enumerate(vals, 1):
