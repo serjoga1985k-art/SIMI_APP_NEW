@@ -590,10 +590,17 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     wb.save(output)
     output.seek(0)
     return output
+def set_single_store(store_name):
+    """Callback: фільтрує весь дашборд тільки на один магазин"""
+    st.session_state["tt_multiselect"] = [store_name]
 
 
 def main():
-def set_single_store(store_name):
+    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
+    # (твій існуючий код main() починається тут)
+
+def main():
+
     """Callback: фільтрує весь дашборд тільки на один магазин"""
     st.session_state["tt_multiselect"] = [store_name]
     st.set_page_config(page_title="СІМІ Dashboard", layout="wide")
