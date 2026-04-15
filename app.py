@@ -316,32 +316,47 @@ def render_article_block(title, table_df, col_tt, col_article,
     fig.add_trace(go.Scatter(x=x_axis, y=table_df["Delta"],   name="Дельта",
                              line=dict(color=YELLOW, dash="dot")))
     fig.update_layout(
-        height=280,
-        margin=dict(t=20, b=15, l=10, r=10),
+        height=250,
+        margin=dict(t=15, b=10, l=10, r=10),
         barmode="group",
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── TT SELECTOR - КОМПАКТНІ КНОПКИ ──────────────────────────────────────────────
+    # ── КОМПАКТНІ КНОПКИ ТТ (20 на рядок, миниатюрні) ──────────────────────────────
     article_data = df_filtered[df_filtered[col_article] == title].copy()
     available_tts = sorted(article_data[col_tt].dropna().unique(), key=str)
     
     if available_tts:
         st.markdown("""
         <style>
-        .tt-label-shop {
-            font-weight: 600;
-            font-size: 0.9rem;
-            color: #2c3e50;
-            margin-bottom: 6px;
-            display: block;
+        .tt-compact-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 2px;
+            margin-top: 4px;
+        }
+        .tt-compact-button {
+            display: inline-block;
+            padding: 2px 5px;
+            font-size: 0.65rem;
+            border: 1px solid #ccc;
+            border-radius: 2px;
+            cursor: pointer;
+            background: #f0f0f0;
+            color: #333;
+            transition: all 0.2s;
+            min-width: 28px;
+            text-align: center;
+            font-weight: 500;
+        }
+        .tt-compact-button:hover {
+            background: #e8e8e8;
         }
         </style>
-        <span class="tt-label-shop">🏪 Магазини:</span>
         """, unsafe_allow_html=True)
         
-        cols_per_row = 15
+        cols_per_row = 20
         num_rows = (len(available_tts) + cols_per_row - 1) // cols_per_row
         
         for row_idx in range(num_rows):
@@ -357,12 +372,15 @@ def render_article_block(title, table_df, col_tt, col_article,
                     if st.button(
                         f"{tt_val}",
                         key=btn_key,
-                        use_container_width=True
+                        use_container_width=True,
+                        help=f"Додати {tt_val} до вибору"
                     ):
-                        st.session_state[f"selected_tt_{title}"] = tt_val
+                        # Додаємо до tt_multiselect в сайдбарі
+                        current_selection = st.session_state.get("tt_multiselect", [])
+                        if tt_val not in current_selection:
+                            current_selection.append(tt_val)
+                            st.session_state["tt_multiselect"] = current_selection
                         st.rerun()
-    else:
-        st.info("Немає даних по магазинах для цієї статті.")
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
