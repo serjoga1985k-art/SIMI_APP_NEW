@@ -1057,7 +1057,7 @@ def main():
                 cmap="RdYlGn_r", subset=pd.IndexSlice[df_display.index[:-1], pct_cols], axis=None
             )
         delta_num_cols = [c for c in num_cols if "Δ" in c]
-        other_num_cols = [c for c in num_cols if "Δ" не in c]
+        other_num_cols = [c for c in num_cols if "Δ" nor in c]
         if delta_num_cols:
             styled = styled.background_gradient(
                 cmap="RdYlGn_r",
