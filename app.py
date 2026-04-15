@@ -369,43 +369,46 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         scw(ws_p, ci, 11)
 
     for ri, article in enumerate(articles_to_show, 2):
-        df_local = df_filtered.copy()
+    df_local = df_filtered.copy()
 
-local_tt = st.session_state.get(f"tt_{article}", [])
-if local_tt:
-    df_local = df_local[df_local[col_tt].isin(local_tt)]
+    local_tt = st.session_state.get(f"tt_{article}", [])
+    if local_tt:
+        df_local = df_local[df_local[col_tt].isin(local_tt)]
 
-extra_col1 = st.session_state.get(f"extra_col1_{article}")
-extra_val1 = st.session_state.get(f"extra_val1_{article}")
+    extra_col1 = st.session_state.get(f"extra_col1_{article}")
+    extra_val1 = st.session_state.get(f"extra_val1_{article}")
 
-if extra_col1 and extra_col1 != "—" and extra_val1:
-    df_local = df_local[df_local[extra_col1].isin(extra_val1)]
+    if extra_col1 and extra_col1 != "—" and extra_val1:
+        df_local = df_local[df_local[extra_col1].isin(extra_val1)]
 
-extra_col2 = st.session_state.get(f"extra_col2_{article}")
-extra_val2 = st.session_state.get(f"extra_val2_{article}")
+    extra_col2 = st.session_state.get(f"extra_col2_{article}")
+    extra_val2 = st.session_state.get(f"extra_val2_{article}")
 
-if extra_col2 and extra_col2 != "—" and extra_val2:
-    df_local = df_local[df_local[extra_col2].isin(extra_val2)]
+    if extra_col2 and extra_col2 != "—" and extra_val2:
+        df_local = df_local[df_local[extra_col2].isin(extra_val2)]
 
-tdf = build_article_monthly(
-    df, df_local, col_tt, col_article,
-    col_month, col_value, col_plf, article,
-    local_tt if local_tt else tt_val,
-    group_factors
-)
-vals = [article] + [tdf.loc[m, metric_col] for m in range(1, 13)]
-        vals.append(sum(tdf.loc[m, metric_col] for m in range(1, 13)))
-        for ci, v in enumerate(vals, 1):
-            c = ws_p.cell(row=ri, column=ci, value=v)
-            c.border = thin_border()
-            c.font = Font(name="Arial", size=9)
-            if ci == 1:
-                c.alignment = Alignment(horizontal="left")
-            else:
-                c.number_format = NUM_FMT
-                c.alignment = Alignment(horizontal="right")
-                if isinstance(v, (int, float)) and v < 0:
-                    c.font = Font(name="Arial", size=9, color="C0392B")
+    tdf = build_article_monthly(
+        df, df_local, col_tt, col_article,
+        col_month, col_value, col_plf, article,
+        local_tt if local_tt else tt_val,
+        group_factors
+    )
+
+    vals = [article] + [tdf.loc[m, metric_col] for m in range(1, 13)]
+    vals.append(sum(tdf.loc[m, metric_col] for m in range(1, 13)))
+
+    for ci, v in enumerate(vals, 1):
+        c = ws_p.cell(row=ri, column=ci, value=v)
+        c.border = thin_border()
+        c.font = Font(name="Arial", size=9)
+
+        if ci == 1:
+            c.alignment = Alignment(horizontal="left")
+        else:
+            c.number_format = NUM_FMT
+            c.alignment = Alignment(horizontal="right")
+            if isinstance(v, (int, float)) and v < 0:
+                c.font = Font(name="Arial", size=9, color="C0392B")
 
     # ── 2. Листи по статтях з графіками ─────────────────────────
     row_labels = ["План", "Факт", "Average", "Дельта"]
