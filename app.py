@@ -368,7 +368,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     for ci in range(2, len(header) + 1):
         scw(ws_p, ci, 11)
 
-    for ri, article in enumerate(articles_to_show, 2):
+for ri, article in enumerate(articles_to_show, 2):
     df_local = df_filtered.copy()
 
     local_tt = st.session_state.get(f"tt_{article}", [])
