@@ -239,7 +239,7 @@ def render_article_block(title, table_df, chart_title,
             st.info("Немає даних по магазинах для цієї статті.")
     else:
         st.caption("Список магазинів недоступний")
-
+                        )
     # ── 1. Зведена таблиця ──────────────────────────────────────
     ws_p = wb.create_sheet("Зведена_таблиця")
     ws_p.freeze_panes = "B2"
