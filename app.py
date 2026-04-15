@@ -31,14 +31,10 @@ GREEN_HDR = "#2e7d32"
 def load_excel(file, sheet_name):
     import os
     ext = os.path.splitext(file.name)[1].lower()
-
     if ext == ".xlsb":
-        # Використовуємо pyxlsb для читання
         df = pd.read_excel(file, sheet_name=sheet_name, engine="pyxlsb")
     else:
-        # Для xlsx/xls — стандартний openpyxl
         df = pd.read_excel(file, sheet_name=sheet_name)
-
     df.columns = df.columns.str.strip()
     return df
 
@@ -51,13 +47,14 @@ def get_month_num(series):
 
 def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
                           col_value, col_plf, selected_art, selected_tts, group_factors):
-    art_all = df[df[col_article] == selected_art].copy()
+    art_all  = df[df[col_article] == selected_art].copy()
     art_filt = df_filtered[df_filtered[col_article] == selected_art].copy()
-    art_all["_m"] = get_month_num(art_all[col_month])
+    art_all["_m"]  = get_month_num(art_all[col_month])
     art_filt["_m"] = get_month_num(art_filt[col_month])
 
     if art_filt.empty:
-        merged = pd.DataFrame(index=range(1, 13), columns=["Plan", "Fact", "Average", "Delta"]).fillna(0)
+        merged = pd.DataFrame(index=range(1, 13),
+                              columns=["Plan", "Fact", "Average", "Delta"]).fillna(0)
         merged.index.name = "month"
         return merged
 
@@ -125,7 +122,12 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
 
 def render_article_block(title, table_df, chart_title,
                          df_filtered=None, col_tt=None, col_article=None,
-                         col_month=None, col_value=None, col_plf=None):
+                         col_month=None, col_value=None, col_plf=None,
+                         all_tts=None):
+    """
+    Рендерить блок статті: таблиця → метрики → графік → слайсер ТТ.
+    Повертає список ТТ, вибраних у слайсері (або None).
+    """
     rows = {
         "План":    ("Plan",    "#ffffff", "#333333"),
         "Факт":    ("Fact",    "#e8d5f5", PURPLE),
@@ -137,7 +139,8 @@ def render_article_block(title, table_df, chart_title,
     th = ("background:#2e7d32;color:white;font-weight:bold;border:1px solid #aaa;"
           "padding:4px 8px;text-align:center;font-size:0.78rem;")
     td = "border:1px solid #ccc;padding:3px 7px;text-align:right;font-size:0.78rem;"
-    tl = "border:1px solid #ccc;padding:3px 7px;font-size:0.78rem;font-weight:600;white-space:nowrap;"
+    tl = ("border:1px solid #ccc;padding:3px 7px;font-size:0.78rem;"
+          "font-weight:600;white-space:nowrap;")
 
     html = f"""
     <div style="margin-top:20px; margin-bottom:4px;">
@@ -153,7 +156,7 @@ def render_article_block(title, table_df, chart_title,
       </tr></thead><tbody>
     """
     for label, (col, bg, color) in rows.items():
-        vals = [table_df.loc[m, col] for m in range(1, 13)]
+        vals  = [table_df.loc[m, col] for m in range(1, 13)]
         total = sum(vals)
         html += f'<tr style="background:{bg};">'
         html += f'<td style="{tl}color:{color};">{label}</td>'
@@ -164,7 +167,7 @@ def render_article_block(title, table_df, chart_title,
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
-    # ── Метрики над діаграмою ────────────────────────────────────
+    # ── Метрики ──────────────────────────────────────────────────
     if (df_filtered is not None and col_tt and col_article
             and col_value and col_plf and col_month):
 
@@ -177,8 +180,8 @@ def render_article_block(title, table_df, chart_title,
         total_delta = total_fact - total_plan
         pct_vs_plan = ((total_fact / total_plan - 1) * 100) if total_plan != 0 else None
 
-        pct_str = (f"{'+' if pct_vs_plan >= 0 else ''}{pct_vs_plan:.1f}%"
-                   if pct_vs_plan is not None else "—")
+        pct_str   = (f"{'+' if pct_vs_plan >= 0 else ''}{pct_vs_plan:.1f}%"
+                     if pct_vs_plan is not None else "—")
         pct_color = RED_LINE if (pct_vs_plan or 0) > 0 else GREEN_HDR
 
         sub = df_filtered[
@@ -193,17 +196,14 @@ def render_article_block(title, table_df, chart_title,
         if not sub.empty and col_tt in sub.columns:
             tt_totals = (
                 sub.groupby(col_tt)[col_value]
-                .sum()
-                .dropna()
-                .sort_values()
+                .sum().dropna().sort_values()
             )
             n = min(3, len(tt_totals))
 
             def make_pills(series, color, bg):
                 pills = ""
                 for tt, val in series.items():
-                    sign = "+" if val > 0 else ""
-                    # Форматування: 0 знаків після коми, роздільник тисяч пробілом
+                    sign    = "+" if val > 0 else ""
                     val_fmt = f"{val:,.0f}".replace(",", " ")
                     pills += (
                         f'<span style="display:inline-block;background:{bg};color:{color};'
@@ -214,9 +214,7 @@ def render_article_block(title, table_df, chart_title,
                     )
                 return pills
 
-            # Кращі = мінімальний Fact (економія / найменший витрата)
-            best_pills  = make_pills(tt_totals.head(n),          "#1b5e20", "#e8f5e9")
-            # Гірші = максимальний Fact (переліміт / найбільша витрата)
+            best_pills  = make_pills(tt_totals.head(n),           "#1b5e20", "#e8f5e9")
             worst_pills = make_pills(tt_totals.tail(n).iloc[::-1], "#7f0000", "#ffebee")
 
         delta_color = RED_LINE if total_delta > 0 else GREEN_HDR
@@ -225,57 +223,50 @@ def render_article_block(title, table_df, chart_title,
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;
                     background:#f9f6ff;border:1px solid #d0baf5;border-radius:6px;
                     padding:10px 16px;margin:6px 0 10px 0;">
-
           <div style="min-width:130px;">
-            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
-                        letter-spacing:.04em;">Серед. Fact / міс.</div>
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;
+                        text-transform:uppercase;letter-spacing:.04em;">Серед. Fact / міс.</div>
             <div style="font-size:1.1rem;font-weight:700;color:{PURPLE};">
-              {avg_monthly:,.0f}
-            </div>
+              {avg_monthly:,.0f}</div>
           </div>
-
           <div style="min-width:130px;">
-            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
-                        letter-spacing:.04em;">Δ Fact − Plan</div>
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;
+                        text-transform:uppercase;letter-spacing:.04em;">Δ Fact − Plan</div>
             <div style="font-size:1.1rem;font-weight:700;color:{delta_color};">
-              {('+' if total_delta > 0 else '')}{total_delta:,.0f}
-            </div>
+              {('+' if total_delta > 0 else '')}{total_delta:,.0f}</div>
           </div>
-
           <div style="min-width:100px;">
-            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
-                        letter-spacing:.04em;">% до плану</div>
-            <div style="font-size:1.1rem;font-weight:700;color:{pct_color};">
-              {pct_str}
-            </div>
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;
+                        text-transform:uppercase;letter-spacing:.04em;">% до плану</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{pct_color};">{pct_str}</div>
           </div>
-
           <div style="flex:1;min-width:220px;">
-            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                        letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
-            <div>{best_pills if best_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
+            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;
+                        text-transform:uppercase;letter-spacing:.04em;">✅ Кращі магазини</div>
+            <div>{best_pills if best_pills else
+                  '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
           </div>
-
           <div style="flex:1;min-width:220px;">
-            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                        letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div>
-            <div>{worst_pills if worst_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
+            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;
+                        text-transform:uppercase;letter-spacing:.04em;">❌ Гірші магазини</div>
+            <div>{worst_pills if worst_pills else
+                  '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
           </div>
-
         </div>
         """
         st.markdown(metrics_html, unsafe_allow_html=True)
 
-    # ── Plotly Chart ─────────────────────────────────────────────
+    # ── Графік ───────────────────────────────────────────────────
     x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=x_axis, y=table_df["Plan"],    name="План",    marker_color=GREY))
-    fig.add_trace(go.Bar(x=x_axis, y=table_df["Fact"],    name="Факт",    marker_color=PURPLE))
+    fig.add_trace(go.Bar(x=x_axis, y=table_df["Plan"],
+                         name="План", marker_color=GREY))
+    fig.add_trace(go.Bar(x=x_axis, y=table_df["Fact"],
+                         name="Факт", marker_color=PURPLE))
     fig.add_trace(go.Scatter(x=x_axis, y=table_df["Average"], name="Average",
                              line=dict(color=RED_LINE, width=3)))
     fig.add_trace(go.Scatter(x=x_axis, y=table_df["Delta"],   name="Дельта",
                              line=dict(color=YELLOW, dash="dot")))
-
     fig.update_layout(
         height=350,
         margin=dict(t=30, b=20, l=10, r=10),
@@ -283,6 +274,114 @@ def render_article_block(title, table_df, chart_title,
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════
+    #  СЛАЙСЕР ТТ — під графіком, у стилі Excel
+    # ══════════════════════════════════════════════════════════════
+    if df_filtered is None or col_tt is None:
+        return None
+
+    tts_pool = (sorted(all_tts, key=str)
+                if all_tts is not None
+                else sorted(df_filtered[col_tt].dropna().unique(), key=str))
+
+    if not tts_pool:
+        return None
+
+    safe_key = title.replace(" ", "_").replace("/", "_")[:40]
+    skey     = f"slicer_{safe_key}"
+
+    # Ініціалізуємо стан — за замовчуванням усі ТТ обрані
+    if skey not in st.session_state:
+        st.session_state[skey] = list(tts_pool)
+
+    # ── Заголовок слайсера ────────────────────────────────────────
+    st.markdown(
+        f"""<div style="margin-top:6px;margin-bottom:4px;
+                        border-top:2px solid {PURPLE};padding-top:8px;">
+              <span style="background:{PURPLE};color:white;font-weight:700;
+                           padding:3px 12px;font-size:0.78rem;border-radius:2px;">
+                🗂 Слайсер ТТ</span>
+            </div>""",
+        unsafe_allow_html=True,
+    )
+
+    # ── Пошук + кнопки ───────────────────────────────────────────
+    sc1, sc2, sc3 = st.columns([5, 1, 1])
+    with sc1:
+        search_q = st.text_input(
+            "tt_search", placeholder="🔎 Пошук ТТ...",
+            key=f"{skey}_q", label_visibility="collapsed",
+        )
+    with sc2:
+        if st.button("Всі", key=f"{skey}_all", use_container_width=True):
+            st.session_state[skey] = list(tts_pool)
+            st.rerun()
+    with sc3:
+        if st.button("✖ Скинути", key=f"{skey}_clr", use_container_width=True):
+            st.session_state[skey] = []
+            st.rerun()
+
+    # Фільтруємо плитки за пошуком
+    visible_tiles = (
+        [tt for tt in tts_pool if search_q.lower() in str(tt).lower()]
+        if search_q else tts_pool
+    )
+
+    cur_sel = set(st.session_state.get(skey, tts_pool))
+    count_str = f"{len(cur_sel)} / {len(tts_pool)} обрано"
+
+    # ── HTML-плитки (відображення поточного стану) ───────────────
+    tiles_inner = ""
+    for tt in visible_tiles:
+        is_active = tt in cur_sel
+        bg    = PURPLE    if is_active else "#ffffff"
+        fg    = "#ffffff" if is_active else "#444444"
+        bord  = PURPLE    if is_active else "#d0c0e8"
+        hover_bg = "#7b4db0" if is_active else "#ede8f8"
+        safe_tt = str(tt)
+        tiles_inner += (
+            f'<span title="{safe_tt}" '
+            f'style="display:inline-block;padding:3px 9px;'
+            f'border-radius:3px;font-size:0.72rem;font-weight:600;'
+            f'border:1.5px solid {bord};background:{bg};color:{fg};'
+            f'margin:2px 2px;white-space:nowrap;min-width:44px;'
+            f'text-align:center;cursor:default;">'
+            f'{safe_tt}</span>'
+        )
+
+    slicer_html = f"""
+    <div style="background:#f5f0fb;border:1.5px solid #c9b8e8;border-radius:6px;
+                padding:8px 10px 6px 10px;margin-bottom:6px;">
+      <div style="font-size:0.68rem;color:#888;margin-bottom:5px;
+                  font-style:italic;">{count_str} — змінити вибір нижче ↓</div>
+      <div style="display:flex;flex-wrap:wrap;gap:0;
+                  max-height:190px;overflow-y:auto;padding-right:2px;">
+        {tiles_inner}
+      </div>
+    </div>
+    <style>
+      /* Скролбар слайсера */
+      div[style*="max-height:190px"]::-webkit-scrollbar {{width:5px;}}
+      div[style*="max-height:190px"]::-webkit-scrollbar-thumb {{
+        background:#c9b8e8;border-radius:3px;}}
+    </style>
+    """
+    st.markdown(slicer_html, unsafe_allow_html=True)
+
+    # ── Реальний multiselect для зміни вибору ────────────────────
+    # (label прихований — замінений HTML-плитками вище)
+    chosen = st.multiselect(
+        label=f"ТТ для «{title}»",
+        options=visible_tiles,
+        default=[t for t in st.session_state.get(skey, visible_tiles)
+                 if t in visible_tiles],
+        key=f"{skey}_ms",
+        label_visibility="collapsed",
+    )
+    st.session_state[skey] = chosen
+
+    return chosen  # список вибраних ТТ — можна передати у build_article_monthly
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
@@ -425,17 +524,16 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             font=dict(family="Arial"),
         )
 
-        # ── Виправлення FileNotFoundError: використовуємо BytesIO замість temp-файлу ──
         try:
             import plotly.io as pio
-            img_bytes = pio.to_image(fig, format="png", scale=1.5)
+            img_bytes  = pio.to_image(fig, format="png", scale=1.5)
             img_stream = io.BytesIO(img_bytes)
-            img_obj = XLImage(img_stream)
+            img_obj    = XLImage(img_stream)
             img_obj.anchor = "A7"
             ws.add_image(img_obj)
         except Exception:
             ws.cell(row=7, column=1,
-                    value="⚠️ Графік недоступний (встановіть kaleido: pip install kaleido)")
+                    value="⚠️ Графік недоступний (pip install kaleido)")
 
     # ── 3. Heatmap ───────────────────────────────────────────────
     if group_factors:
@@ -487,9 +585,9 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             import matplotlib.pyplot as plt
             import matplotlib.colors as mcolors
             cmap_obj = plt.get_cmap("RdYlGn_r")
-            flat = heat2.values.flatten().astype(float)
-            flat = flat[~np.isnan(flat)]
-            norm = mcolors.Normalize(vmin=float(np.nanmin(flat)), vmax=float(np.nanmax(flat)))
+            flat     = heat2.values.flatten().astype(float)
+            flat     = flat[~np.isnan(flat)]
+            norm     = mcolors.Normalize(vmin=float(np.nanmin(flat)), vmax=float(np.nanmax(flat)))
             use_cmap = True
         except Exception:
             use_cmap = False
@@ -505,15 +603,14 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 c.alignment = Alignment(horizontal="right")
                 if pd.isna(v):
                     c.value = None
-                    # ── Виправлення: біла заливка замість чорної для NaN ──
-                    c.fill = hdr_fill("FFFFFF")
+                    c.fill  = hdr_fill("FFFFFF")
                 else:
                     c.value = float(v)
                     c.number_format = NUM_FMT
                     if use_cmap:
                         rgba = cmap_obj(norm(float(v)))
                         hx = "{:02X}{:02X}{:02X}".format(
-                            int(rgba[0] * 255), int(rgba[1] * 255), int(rgba[2] * 255))
+                            int(rgba[0]*255), int(rgba[1]*255), int(rgba[2]*255))
                         c.fill = hdr_fill(hx)
                     c.font = Font(name="Arial", size=9, color="000000")
 
@@ -542,8 +639,8 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 import matplotlib.pyplot as plt
                 import matplotlib.colors as mcolors
                 vals_arr = df_block[vc].values.astype(float)
-                nm = mcolors.Normalize(vmin=float(np.nanmin(vals_arr)),
-                                       vmax=float(np.nanmax(vals_arr)))
+                nm  = mcolors.Normalize(vmin=float(np.nanmin(vals_arr)),
+                                        vmax=float(np.nanmax(vals_arr)))
                 cm2 = plt.get_cmap(cmap_name)
                 use_c = True
             except Exception:
@@ -555,16 +652,14 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 ws_top.cell(row=ri2, column=start_col).font = Font(name="Arial", size=9)
                 c2 = ws_top.cell(row=ri2, column=start_col + 1,
                                   value=float(val_v) if pd.notna(val_v) else None)
-                # ── Розрядність: 0 знаків після коми, роздільник тисяч ──
                 c2.number_format = NUM_FMT
                 c2.border = thin_border()
                 c2.alignment = Alignment(horizontal="right")
                 if use_c and pd.notna(val_v):
                     rgba2 = cm2(nm(float(val_v)))
                     hx2 = "{:02X}{:02X}{:02X}".format(
-                        int(rgba2[0] * 255), int(rgba2[1] * 255), int(rgba2[2] * 255))
+                        int(rgba2[0]*255), int(rgba2[1]*255), int(rgba2[2]*255))
                     c2.fill = hdr_fill(hx2)
-                    # ── Перевіряємо контрастність для читабельності ──
                     r2, g2, b2 = int(rgba2[0]*255), int(rgba2[1]*255), int(rgba2[2]*255)
                     luminance = (0.299*r2 + 0.587*g2 + 0.114*b2) / 255
                     font_color = "000000" if luminance > 0.5 else "FFFFFF"
@@ -603,6 +698,10 @@ def main():
         border-radius:8px; padding:12px 16px; margin-bottom:14px;
     }
     .block-sep { border-top:2px solid #5b2d8e; margin:16px 0 10px 0; }
+    /* Приховуємо label multiselect слайсера */
+    div[data-testid="stMultiSelect"] > label[data-testid="stWidgetLabel"] {
+        display: none !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -611,10 +710,10 @@ def main():
         st.info("Завантажте Excel-файл для початку роботи.")
         st.stop()
 
-    xl = pd.ExcelFile(file)
+    xl         = pd.ExcelFile(file)
     sheet_name = st.selectbox("Аркуш", xl.sheet_names)
-    df = load_excel(file, sheet_name)
-    cols = df.columns.tolist()
+    df         = load_excel(file, sheet_name)
+    cols       = df.columns.tolist()
 
     with st.expander("⚙️ Налаштування колонок", expanded=True):
         c1, c2, c3, c4 = st.columns(4)
@@ -642,7 +741,7 @@ def main():
             col_rik    = st.selectbox("Рік",            ["—"] + cols)
             col_mis    = st.selectbox("Місяць (шапка)", ["—"] + cols)
 
-    # ── Сайдбар: основні фільтри ─────────────────────────────────
+    # ── Сайдбар ──────────────────────────────────────────────────
     st.sidebar.markdown("## 🔍 Фільтри")
     year_val   = st.sidebar.multiselect("Year",    sorted(df[col_year].dropna().unique(),   key=str))
     month_val  = st.sidebar.multiselect("Month",   sorted(df[col_month].dropna().unique(),  key=str))
@@ -650,7 +749,7 @@ def main():
 
     st.sidebar.markdown("### ➕ Додаткові фільтри")
     fixed_cols = {col_tt, col_year, col_month, col_level0}
-    extra_col = st.sidebar.selectbox(
+    extra_col  = st.sidebar.selectbox(
         "Стовпець для фільтру",
         ["— не обрано —"] + [c for c in cols if c not in fixed_cols],
         key="extra_filter_col",
@@ -690,17 +789,14 @@ def main():
                 if extra_val3:
                     extra_filters[extra_col3] = extra_val3
 
-    # ── Динамічний список ТТ за поточними фільтрами ──────────────
+    # ── Динамічний список ТТ ──────────────────────────────────────
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🏪 ТТ за поточними фільтрами")
 
     df_pre = df.copy()
-    if year_val:
-        df_pre = df_pre[df_pre[col_year].isin(year_val)]
-    if month_val:
-        df_pre = df_pre[df_pre[col_month].isin(month_val)]
-    if level0_val:
-        df_pre = df_pre[df_pre[col_level0].isin(level0_val)]
+    if year_val:   df_pre = df_pre[df_pre[col_year].isin(year_val)]
+    if month_val:  df_pre = df_pre[df_pre[col_month].isin(month_val)]
+    if level0_val: df_pre = df_pre[df_pre[col_level0].isin(level0_val)]
     for col_e, vals_e in extra_filters.items():
         df_pre = df_pre[df_pre[col_e].isin(vals_e)]
 
@@ -708,16 +804,13 @@ def main():
 
     if visible_tts:
         st.sidebar.caption(f"Знайдено: {len(visible_tts)} магазинів")
-
         tt_search = st.sidebar.text_input(
             "🔎 Пошук ТТ", value="", placeholder="Введіть назву...", key="tt_search"
         )
-
         filtered_tts = (
             [tt for tt in visible_tts if tt_search.lower() in str(tt).lower()]
             if tt_search else visible_tts
         )
-
         btn_col1, btn_col2 = st.sidebar.columns(2)
         with btn_col1:
             if st.button("✅ Всі", key="tt_select_all", use_container_width=True):
@@ -725,7 +818,6 @@ def main():
         with btn_col2:
             if st.button("✖ Жодного", key="tt_clear_all", use_container_width=True):
                 st.session_state["tt_multiselect"] = []
-
         tt_val = st.sidebar.multiselect(
             "Оберіть ТТ:",
             options=filtered_tts,
@@ -737,7 +829,6 @@ def main():
         tt_val = []
 
     st.sidebar.markdown("---")
-
     mode = st.sidebar.selectbox(
         "Mode (Heatmap)", ["Delta", "Delta %", "Z-score", "Fact", "Average"]
     )
@@ -768,10 +859,11 @@ def main():
         return str(vals[0]) if len(vals) else "—"
 
     articles_all = sorted(df[col_article].dropna().unique(), key=str)
+
     st.markdown('<div class="article-selector">', unsafe_allow_html=True)
     sel_col1, sel_col2, sel_col3 = st.columns([3, 1, 1])
     with sel_col1:
-        st.markdown("**🎯 Стаття бюджету для аналізу** — обери одну статтю або увімкни «Всі»")
+        st.markdown("**🎯 Стаття бюджету для аналізу**")
         selected_article = st.selectbox(
             "article_selector", articles_all, key="global_article",
             label_visibility="collapsed",
@@ -823,23 +915,38 @@ def main():
     # ── Блоки по статтях ─────────────────────────────────────────
     for article in articles_to_show:
         st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
+
+        # Усі ТТ доступні в поточному df_filtered
+        all_article_tts = sorted(df_filtered[col_tt].dropna().unique(), key=str)
+
+        # Читаємо вибрані у слайсері ТТ (або всі, якщо ще не обирали)
+        safe_key    = article.replace(" ", "_").replace("/", "_")[:40]
+        skey_ms     = f"slicer_{safe_key}_ms"
+        slicer_tts  = st.session_state.get(skey_ms, all_article_tts)
+        # Якщо список порожній — беремо всі (щоб графік не був пустим)
+        tts_for_chart = slicer_tts if slicer_tts else all_article_tts
+
         tdf = build_article_monthly(
             df, df_filtered, col_tt, col_article,
-            col_month, col_value, col_plf, article, tt_val, group_factors
+            col_month, col_value, col_plf, article,
+            tts_for_chart,   # <-- вибрані у слайсері
+            group_factors,
         )
+
         render_article_block(
             title=article,
             table_df=tdf,
-            chart_title=f"Аналіз середньомісячного показника — {article}",
+            chart_title=f"Аналіз — {article}",
             df_filtered=df_filtered,
             col_tt=col_tt,
             col_article=col_article,
             col_month=col_month,
             col_value=col_value,
             col_plf=col_plf,
+            all_tts=all_article_tts,
         )
 
-    # ── Зведена таблиця по статтях ───────────────────────────────
+    # ── Зведена таблиця ──────────────────────────────────────────
     st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
     st.subheader("📋 Зведена таблиця")
     pivot_metric = st.radio("Метрика", ["Fact", "Plan", "Delta (Fact-Plan)"], horizontal=True)
@@ -857,11 +964,12 @@ def main():
         rows_pivot.append(row)
 
     pivot_df = pd.DataFrame(rows_pivot).set_index("Стаття")
-    cmap_p = "RdYlGn_r" if pivot_metric == "Delta (Fact-Plan)" else "Blues"
+    cmap_p   = "RdYlGn_r" if pivot_metric == "Delta (Fact-Plan)" else "Blues"
     st.dataframe(
         pivot_df.style
             .background_gradient(cmap=cmap_p, axis=None)
-            .format(lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-", na_rep="-"),
+            .format(lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-",
+                    na_rep="-"),
         use_container_width=True,
     )
 
@@ -871,7 +979,7 @@ def main():
 
     tt_pivot_metric = st.radio(
         "Метрика (ТТ)", ["Fact", "Plan", "Delta (Fact-Plan)"], horizontal=True,
-        key="tt_pivot_metric"
+        key="tt_pivot_metric",
     )
     tt_metric_col = col_map_d[tt_pivot_metric]
 
@@ -882,25 +990,23 @@ def main():
     df_num_tt[col_value] = pd.to_numeric(df_num_tt[col_value], errors="coerce")
     df_num_tt["_m"] = get_month_num(df_num_tt[col_month])
 
-    all_tts = sorted(df_filtered[col_tt].dropna().unique(), key=str)
+    all_tts_pivot = sorted(df_filtered[col_tt].dropna().unique(), key=str)
 
     rows_tt = []
-    for tt in all_tts:
+    for tt in all_tts_pivot:
         sub = df_num_tt[df_num_tt[col_tt] == tt]
         for article in articles_to_show:
-            sub_a = sub[sub[col_article] == article]
+            sub_a  = sub[sub[col_article] == article]
             plan_m = sub_a[sub_a[col_plf] == "PL"].groupby("_m")[col_value].sum()
             fact_m = sub_a[sub_a[col_plf] == "F"].groupby("_m")[col_value].sum()
-
-            row = {"ТТ": tt, "Стаття": article}
+            row    = {"ТТ": tt, "Стаття": article}
             for m in range(1, 13):
                 row[f"plan_{MONTH_LABELS[m]}"] = plan_m.get(m, 0)
                 row[f"fact_{MONTH_LABELS[m]}"] = fact_m.get(m, 0)
-
-            row["Plan_РАЗОМ"] = sum(plan_m.get(m, 0) for m in range(1, 13))
-            row["Fact_РАЗОМ"] = sum(fact_m.get(m, 0) for m in range(1, 13))
+            row["Plan_РАЗОМ"]  = sum(plan_m.get(m, 0) for m in range(1, 13))
+            row["Fact_РАЗОМ"]  = sum(fact_m.get(m, 0) for m in range(1, 13))
             row["Delta_РАЗОМ"] = row["Fact_РАЗОМ"] - row["Plan_РАЗОМ"]
-            row["Pct_РАЗОМ"] = (
+            row["Pct_РАЗОМ"]   = (
                 (row["Fact_РАЗОМ"] / row["Plan_РАЗОМ"] - 1) * 100
                 if row["Plan_РАЗОМ"] != 0 else None
             )
@@ -967,8 +1073,8 @@ def main():
         df_display = df_tt_agg[display_cols].rename(columns=col_labels).set_index("ТТ")
 
         sort_col_label = "% відхил." if show_pct else (
-            "Δ РАЗОМ"     if tt_metric_col == "Delta (Fact-Plan)" else
-            "Fact РАЗОМ"  if tt_metric_col == "Fact" else "Plan РАЗОМ"
+            "Δ РАЗОМ"    if tt_metric_col == "Delta (Fact-Plan)" else
+            "Fact РАЗОМ" if tt_metric_col == "Fact" else "Plan РАЗОМ"
         )
         if sort_col_label in df_display.columns:
             df_display = df_display.sort_values(sort_col_label, ascending=True)
@@ -983,8 +1089,8 @@ def main():
         total_row.name = "🟰 РАЗОМ"
         df_display = pd.concat([df_display, total_row.to_frame().T])
 
-        pct_cols  = [c for c in df_display.columns if "%" in c]
-        num_cols  = [c for c in df_display.columns if "%" not in c]
+        pct_cols = [c for c in df_display.columns if "%" in c]
+        num_cols = [c for c in df_display.columns if "%" not in c]
 
         def fmt_num(v):
             if pd.isna(v): return "-"
@@ -1002,21 +1108,21 @@ def main():
 
         if pct_cols:
             styled = styled.background_gradient(
-                cmap="RdYlGn_r", subset=pd.IndexSlice[df_display.index[:-1], pct_cols], axis=None
+                cmap="RdYlGn_r",
+                subset=pd.IndexSlice[df_display.index[:-1], pct_cols], axis=None,
             )
         delta_num_cols = [c for c in num_cols if "Δ" in c]
         other_num_cols = [c for c in num_cols if "Δ" not in c]
         if delta_num_cols:
             styled = styled.background_gradient(
                 cmap="RdYlGn_r",
-                subset=pd.IndexSlice[df_display.index[:-1], delta_num_cols], axis=None
+                subset=pd.IndexSlice[df_display.index[:-1], delta_num_cols], axis=None,
             )
         if other_num_cols:
             styled = styled.background_gradient(
                 cmap="Blues",
-                subset=pd.IndexSlice[df_display.index[:-1], other_num_cols], axis=None
+                subset=pd.IndexSlice[df_display.index[:-1], other_num_cols], axis=None,
             )
-
         styled = styled.apply(
             lambda row: [
                 "font-weight:bold; border-top:2px solid #5b2d8e;" for _ in row
@@ -1097,14 +1203,16 @@ def main():
             st.dataframe(
                 top.style
                    .background_gradient(cmap="RdYlGn", subset=[val_col])
-                   .format({val_col: lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-"})
+                   .format({val_col: lambda v: f"{v:,.0f}".replace(",", " ")
+                            if pd.notna(v) else "-"})
             )
         with cb:
             st.write("❌ Antitop (переліміт)")
             st.dataframe(
                 antitop.style
                        .background_gradient(cmap="RdYlGn_r", subset=[val_col])
-                       .format({val_col: lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-"})
+                       .format({val_col: lambda v: f"{v:,.0f}".replace(",", " ")
+                                if pd.notna(v) else "-"})
             )
     else:
         st.info("Оберіть фактори групування в боковому меню для побудови Heatmap.")
@@ -1117,7 +1225,7 @@ def main():
         data=export_excel(
             df, df_filtered, col_tt, col_article, col_month, col_value,
             col_plf, articles_to_show, tt_val, group_factors, metric_col,
-            mode, pivot_df
+            mode, pivot_df,
         ),
         file_name="simi_dashboard.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
