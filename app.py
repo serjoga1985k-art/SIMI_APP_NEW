@@ -216,44 +216,52 @@ def render_article_block(title, table_df, chart_title,
     fig.update_layout(height=350, margin=dict(t=30, b=20, l=10, r=10), barmode="group", hovermode="x unified")
     st.plotly_chart(fig, use_container_width=True)
 
-    # ==================== S L I C E R ====================
-    st.markdown("**🏪 Slicer — вибір магазинів**")
+        # ==================== S L I C E R (як в Excel) ====================
+    st.markdown("**🏪 Slicer — вибір магазинів для цієї статті**")
     if df_filtered is not None and col_tt and col_article:
         article_df = df_filtered[df_filtered[col_article] == title]
         all_stores = sorted(article_df[col_tt].dropna().unique().tolist())
 
         if all_stores:
-            col1, col2 = st.columns([4, 1])
+            # Ключ для збереження вибору для кожної статті
+            session_key = f"article_stores_{title}"
+
+            col1, col2, col3 = st.columns([5, 1, 1])
             with col1:
                 selected_stores = st.multiselect(
-                    label="Оберіть магазини (пошук працює)",
+                    label="Оберіть магазини",
                     options=all_stores,
-                    default=st.session_state.get(f"article_stores_{title}", all_stores[:10]),  # за замовчуванням перші 10
+                    default=st.session_state.get(session_key, all_stores[:8]),  # перші 8 за замовчуванням
                     key=f"store_slicer_{title}",
-                    placeholder="Пошук магазину..."
+                    placeholder="Пошук або вибір магазинів..."
                 )
+            
             with col2:
-                st.write("")  # відступ
-                if st.button("✅ Всі", use_container_width=True, key=f"all_{title}"):
-                    st.session_state[f"article_stores_{title}"] = all_stores
+                if st.button("✅ Всі", use_container_width=True, key=f"all_btn_{title}"):
+                    st.session_state[session_key] = all_stores.copy()
                     st.rerun()
-                if st.button("❌ Очистити", use_container_width=True, key=f"clear_{title}"):
-                    st.session_state[f"article_stores_{title}"] = []
+            with col3:
+                if st.button("❌ Очистити", use_container_width=True, key=f"clear_btn_{title}"):
+                    st.session_state[session_key] = []
                     st.rerun()
 
-            # Зберігаємо вибір у session_state
-            st.session_state[f"article_stores_{title}"] = selected_stores
+            # Зберігаємо вибір
+            st.session_state[session_key] = selected_stores
 
-            # Показуємо вибрані магазини як чіпи
+            # Показ вибраних магазинів
             if selected_stores:
-                st.write("**Вибрано:** " + ", ".join(selected_stores))
+                st.success("**Вибрано:** " + ", ".join(map(str, selected_stores)))
             else:
-                st.warning("Жоден магазин не вибрано")
+                st.warning("Жоден магазин не вибрано. Дані будуть порожніми.")
 
+            # Важливо: фільтруємо tt_val для цієї статті
+            current_tt_val = selected_stores
         else:
-            st.info("Немає даних по магазинах для цієї статті.")
+            st.info("Немає магазинів для цієї статті.")
+            current_tt_val = []
     else:
         st.caption("Список магазинів недоступний")
+        current_tt_val = []
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                  col_plf, articles_to_show, tt_val, group_factors, metric_col,
                  mode, pivot_df):
