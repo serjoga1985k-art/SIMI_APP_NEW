@@ -856,8 +856,7 @@ def main():
         render_article_block(
                 selected_tts, selected_year, extra_filters = render_article_block(
         selected_article, table_df, "Аналіз", df_filtered,
-        col_tt, col_article, col_month, col_value, col_plf
-    )
+        col_tt, col_article, col_month, col_value, col_plf)
 
     # Застосування фільтрів
     df_filtered2 = df_filtered.copy()
