@@ -549,16 +549,8 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     wb.save(output)
     output.seek(0)
     return output
-def set_single_store(store):
-    current = st.session_state.get("tt_multiselect", [])
-
-    # якщо Shift/Ctrl логіки нема — просто toggle
-    if store in current:
-        current.remove(store)
-    else:
-        current.append(store)
-
-    st.session_state["tt_multiselect"] = current
+def set_single_store(store_name):
+    st.session_state["tt_multiselect"] = [store_name]
     st.rerun()
 
 def main():
