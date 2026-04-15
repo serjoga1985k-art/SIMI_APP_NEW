@@ -266,7 +266,7 @@ def render_article_block(title, table_df, chart_title,
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── КЛІКАБЕЛЬНИЙ список магазинів під графіком ─────────────────────
+    # ── КЛІКАБЕЛЬНИЙ список магазинів ─────────────────────────────
     st.markdown("**🏪 Список магазинів у аналізі статті** (натисни на магазин для фільтру)")
     if df_filtered is not None and col_tt and col_article:
         article_df = df_filtered[df_filtered[col_article] == title]
@@ -274,7 +274,6 @@ def render_article_block(title, table_df, chart_title,
         
         if stores_list:
             with st.expander(f"Показати всі магазини ({len(stores_list)} шт.)", expanded=False):
-                # Розбиваємо на стовпці для зручності
                 num_cols = 4 if len(stores_list) > 12 else 3
                 cols = st.columns(num_cols)
                 
@@ -284,11 +283,11 @@ def render_article_block(title, table_df, chart_title,
                             str(store),
                             key=f"store_btn_{title}_{idx}",
                             use_container_width=True,
-                            type="secondary"
+                            type="secondary",
+                            on_click=set_single_store,      # ← callback
+                            args=(store,)                   # ← передаємо назву магазину
                         ):
-                            # Фільтруємо весь дашборд тільки на цей магазин
-                            st.session_state["tt_multiselect"] = [store]
-                            st.rerun()
+                            pass  # callback вже обробляє фільтр
         else:
             st.info("Немає даних по магазинах для цієї статті.")
     else:
@@ -594,6 +593,9 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
 
 
 def main():
+def set_single_store(store_name):
+    """Callback: фільтрує весь дашборд тільки на один магазин"""
+    st.session_state["tt_multiselect"] = [store_name]
     st.set_page_config(page_title="СІМІ Dashboard", layout="wide")
     st.markdown("""
     <style>
