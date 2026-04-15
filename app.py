@@ -121,7 +121,7 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
     merged["Delta"] = merged["Fact"] - merged["Average"]
 
     return merged
-def set_single_store(store):
+    def set_single_store(store):
     current = st.session_state.get("tt_multiselect", [])
 
     # якщо Shift/Ctrl логіки нема — просто toggle
