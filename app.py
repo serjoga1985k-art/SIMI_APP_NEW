@@ -123,7 +123,7 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
     return merged
 
 
-ddef render_article_block(title, table_df, chart_title,
+def render_article_block(title, table_df, chart_title,
                          df_filtered=None, col_tt=None, col_article=None,
                          col_month=None, col_value=None, col_plf=None):
     rows = {
