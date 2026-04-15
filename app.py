@@ -28,29 +28,19 @@ GREEN_HDR = "#2e7d32"
 
 
 @st.cache_data
-def load_excel(file_bytes, file_name, sheet_name):
-    """Кешуємо завантаження за байтами файлу, а не об'єктом."""
+def load_excel(file, sheet_name):
     import os
-    ext = os.path.splitext(file_name)[1].lower()
-    buf = io.BytesIO(file_bytes)
+    ext = os.path.splitext(file.name)[1].lower()
+
     if ext == ".xlsb":
-        df = pd.read_excel(buf, sheet_name=sheet_name, engine="pyxlsb")
+        # Використовуємо pyxlsb для читання
+        df = pd.read_excel(file, sheet_name=sheet_name, engine="pyxlsb")
     else:
-        df = pd.read_excel(buf, sheet_name=sheet_name)
+        # Для xlsx/xls — стандартний openpyxl
+        df = pd.read_excel(file, sheet_name=sheet_name)
+
     df.columns = df.columns.str.strip()
     return df
-
-
-@st.cache_data
-def get_sheet_names(file_bytes, file_name):
-    import os
-    ext = os.path.splitext(file_name)[1].lower()
-    buf = io.BytesIO(file_bytes)
-    if ext == ".xlsb":
-        import pyxlsb
-        with pyxlsb.open_workbook(buf) as wb:
-            return wb.sheets
-    return pd.ExcelFile(buf).sheet_names
 
 
 def get_month_num(series):
@@ -59,44 +49,17 @@ def get_month_num(series):
     return series.astype(str).str.strip().map(MONTH_MAP).fillna(0).astype(int)
 
 
-@st.cache_data
-def precompute_global_avg_std(df_hash, group_factors_key, col_article, col_value, col_plf):
-    """
-    Передаємо хеш DataFrame щоб cache_data міг серіалізувати ключ.
-    Повертаємо global_avg_std як DataFrame.
-    """
-    # df передається через session_state окремо — тут отримуємо через глобал
-    df = st.session_state["_df_cache"]
-    if group_factors_key:
-        group_factors = list(group_factors_key)
-        result = (
-            df[df[col_plf] == "F"]
-            .groupby(group_factors + [col_article], as_index=False)[col_value]
-            .agg(Average_Calc="mean", Std="std")
-        )
-    else:
-        result = pd.DataFrame(columns=[col_article, "Average_Calc", "Std"])
-    return result
-
-
 def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
-                           col_value, col_plf, selected_art, selected_tts,
-                           group_factors, global_avg_std=None):
-    """
-    Розраховує місячні Plan/Fact/Average/Delta для однієї статті.
-    global_avg_std передається ззовні щоб не рахувати повторно.
-    """
+                          col_value, col_plf, selected_art, selected_tts, group_factors):
+    art_all = df[df[col_article] == selected_art].copy()
     art_filt = df_filtered[df_filtered[col_article] == selected_art].copy()
+    art_all["_m"] = get_month_num(art_all[col_month])
     art_filt["_m"] = get_month_num(art_filt[col_month])
 
-    empty = pd.DataFrame(
-        {"Plan": 0, "Fact": 0, "Average": 0, "Delta": 0},
-        index=pd.RangeIndex(1, 13)
-    )
-    empty.index.name = "month"
-
     if art_filt.empty:
-        return empty
+        merged = pd.DataFrame(index=range(1, 13), columns=["Plan", "Fact", "Average", "Delta"]).fillna(0)
+        merged.index.name = "month"
+        return merged
 
     if not selected_tts:
         selected_tts = art_filt[col_tt].dropna().unique().tolist()
@@ -108,25 +71,20 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
             .groupby("_m")[col_value].sum()
             .reindex(range(1, 13), fill_value=0).rename("Fact"))
 
-    # Якщо global_avg_std не передано — рахуємо локально
-    if global_avg_std is None:
-        if group_factors:
-            art_all = df[df[col_article] == selected_art].copy()
-            global_avg_std = (
-                art_all[art_all[col_plf] == "F"]
-                .groupby(group_factors + [col_article], as_index=False)[col_value]
-                .agg(Average_Calc="mean", Std="std")
-            )
-        else:
-            art_all = df[df[col_article] == selected_art].copy()
-            art_all["_m"] = get_month_num(art_all[col_month])
-            global_avg_std = (
-                art_all[art_all[col_plf] == "F"]
-                .groupby([col_article, "_m"], as_index=False)[col_value]
-                .agg(Average_Calc="mean")
-            )
-            if "Std" not in global_avg_std.columns:
-                global_avg_std["Std"] = np.nan
+    if group_factors:
+        global_avg_std = (
+            art_all[art_all[col_plf] == "F"]
+            .groupby(group_factors + [col_article], as_index=False)[col_value]
+            .agg(Average_Calc="mean", Std="std")
+        )
+    else:
+        global_avg_std = (
+            art_all[art_all[col_plf] == "F"]
+            .groupby([col_article, "_m"], as_index=False)[col_value]
+            .agg(Average_Calc="mean")
+        )
+        if "Std" not in global_avg_std.columns:
+            global_avg_std["Std"] = np.nan
 
     tt_grp = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
     tt_table = (
@@ -165,31 +123,9 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
     return merged
 
 
-def compute_tt_totals_for_article(df_filtered, col_tt, col_article,
-                                   col_value, col_plf, article):
-    """
-    Повертає Series з сумою Fact по кожному ТТ для заданої статті.
-    Виноситься окремо щоб не дублювати логіку.
-    """
-    sub = df_filtered[
-        (df_filtered[col_article] == article) &   # ← ВИПРАВЛЕННЯ: порівнюємо значення статті
-        (df_filtered[col_plf] == "F")
-    ].copy()
-    sub[col_value] = pd.to_numeric(sub[col_value], errors="coerce")
-
-    if sub.empty or col_tt not in sub.columns:
-        return pd.Series(dtype=float)
-
-    return sub.groupby(col_tt)[col_value].sum().dropna().sort_values()
-
-
-def render_article_block(title, table_df, col_tt, col_article,
-                          col_value, col_plf, df_filtered):
-    """
-    Рендерить таблицю + метрики + графік для однієї статті.
-    title     — значення статті (не назва колонки!)
-    col_*     — назви колонок
-    """
+def render_article_block(title, table_df, chart_title,
+                         df_filtered=None, col_tt=None, col_article=None,
+                         col_month=None, col_value=None, col_plf=None):
     rows = {
         "План":    ("Plan",    "#ffffff", "#333333"),
         "Факт":    ("Fact",    "#e8d5f5", PURPLE),
@@ -228,86 +164,107 @@ def render_article_block(title, table_df, col_tt, col_article,
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
-    # ── Метрики ──────────────────────────────────────────────────
-    facts = [table_df.loc[m, "Fact"] for m in range(1, 13)]
-    non_zero_facts = [f for f in facts if f != 0]
-    avg_monthly = np.mean(non_zero_facts) if non_zero_facts else 0
+    # ── Метрики над діаграмою ────────────────────────────────────
+    if (df_filtered is not None and col_tt and col_article
+            and col_value and col_plf and col_month):
 
-    total_fact  = sum(facts)
-    total_plan  = sum(table_df.loc[m, "Plan"] for m in range(1, 13))
-    total_delta = total_fact - total_plan
-    pct_vs_plan = ((total_fact / total_plan - 1) * 100) if total_plan != 0 else None
+        facts = [table_df.loc[m, "Fact"] for m in range(1, 13)]
+        non_zero_facts = [f for f in facts if f != 0]
+        avg_monthly = np.mean(non_zero_facts) if non_zero_facts else 0
 
-    pct_str   = (f"{'+' if pct_vs_plan >= 0 else ''}{pct_vs_plan:.1f}%"
-                 if pct_vs_plan is not None else "—")
-    pct_color = RED_LINE if (pct_vs_plan or 0) > 0 else GREEN_HDR
+        total_fact  = sum(facts)
+        total_plan  = sum(table_df.loc[m, "Plan"] for m in range(1, 13))
+        total_delta = total_fact - total_plan
+        pct_vs_plan = ((total_fact / total_plan - 1) * 100) if total_plan != 0 else None
 
-    # ── ВИПРАВЛЕННЯ: передаємо article як значення, а col_article як колонку ──
-    tt_totals = compute_tt_totals_for_article(
-        df_filtered, col_tt, col_article, col_value, col_plf, title
-    )
+        pct_str = (f"{'+' if pct_vs_plan >= 0 else ''}{pct_vs_plan:.1f}%"
+                   if pct_vs_plan is not None else "—")
+        pct_color = RED_LINE if (pct_vs_plan or 0) > 0 else GREEN_HDR
 
-    best_pills  = ""
-    worst_pills = ""
+        sub = df_filtered[
+            (df_filtered[col_article] == title) &
+            (df_filtered[col_plf] == "F")
+        ].copy()
+        sub[col_value] = pd.to_numeric(sub[col_value], errors="coerce")
 
-    if not tt_totals.empty:
-        n = min(3, len(tt_totals))
+        best_pills  = ""
+        worst_pills = ""
 
-        def make_pills(series, color, bg):
-            pills = ""
-            for tt, val in series.items():
-                sign = "+" if val > 0 else ""
-                val_fmt = f"{val:,.0f}".replace(",", " ")
-                pills += (
-                    f'<span style="display:inline-block;background:{bg};color:{color};'
-                    f'border-radius:4px;padding:2px 9px;margin:2px 3px;font-size:0.75rem;'
-                    f'font-weight:600;white-space:nowrap;">'
-                    f'{tt}&nbsp;<span style="opacity:.7;font-weight:400;">'
-                    f'({sign}{val_fmt})</span></span>'
-                )
-            return pills
+        if not sub.empty and col_tt in sub.columns:
+            tt_totals = (
+                sub.groupby(col_tt)[col_value]
+                .sum()
+                .dropna()
+                .sort_values()
+            )
+            n = min(3, len(tt_totals))
 
-        best_pills  = make_pills(tt_totals.head(n),           "#1b5e20", "#e8f5e9")
-        worst_pills = make_pills(tt_totals.tail(n).iloc[::-1], "#7f0000", "#ffebee")
+            def make_pills(series, color, bg):
+                pills = ""
+                for tt, val in series.items():
+                    sign = "+" if val > 0 else ""
+                    # Форматування: 0 знаків після коми, роздільник тисяч пробілом
+                    val_fmt = f"{val:,.0f}".replace(",", " ")
+                    pills += (
+                        f'<span style="display:inline-block;background:{bg};color:{color};'
+                        f'border-radius:4px;padding:2px 9px;margin:2px 3px;font-size:0.75rem;'
+                        f'font-weight:600;white-space:nowrap;">'
+                        f'{tt}&nbsp;<span style="opacity:.7;font-weight:400;">'
+                        f'({sign}{val_fmt})</span></span>'
+                    )
+                return pills
 
-    delta_color = RED_LINE if total_delta > 0 else GREEN_HDR
+            # Кращі = мінімальний Fact (економія / найменший витрата)
+            best_pills  = make_pills(tt_totals.head(n),          "#1b5e20", "#e8f5e9")
+            # Гірші = максимальний Fact (переліміт / найбільша витрата)
+            worst_pills = make_pills(tt_totals.tail(n).iloc[::-1], "#7f0000", "#ffebee")
 
-    metrics_html = f"""
-    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;
-                background:#f9f6ff;border:1px solid #d0baf5;border-radius:6px;
-                padding:10px 16px;margin:6px 0 10px 0;">
-      <div style="min-width:130px;">
-        <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
-                    letter-spacing:.04em;">Серед. Fact / міс.</div>
-        <div style="font-size:1.1rem;font-weight:700;color:{PURPLE};">{avg_monthly:,.0f}</div>
-      </div>
-      <div style="min-width:130px;">
-        <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
-                    letter-spacing:.04em;">Δ Fact − Plan</div>
-        <div style="font-size:1.1rem;font-weight:700;color:{delta_color};">
-          {('+' if total_delta > 0 else '')}{total_delta:,.0f}
+        delta_color = RED_LINE if total_delta > 0 else GREEN_HDR
+
+        metrics_html = f"""
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;
+                    background:#f9f6ff;border:1px solid #d0baf5;border-radius:6px;
+                    padding:10px 16px;margin:6px 0 10px 0;">
+
+          <div style="min-width:130px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
+                        letter-spacing:.04em;">Серед. Fact / міс.</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{PURPLE};">
+              {avg_monthly:,.0f}
+            </div>
+          </div>
+
+          <div style="min-width:130px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
+                        letter-spacing:.04em;">Δ Fact − Plan</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{delta_color};">
+              {('+' if total_delta > 0 else '')}{total_delta:,.0f}
+            </div>
+          </div>
+
+          <div style="min-width:100px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
+                        letter-spacing:.04em;">% до плану</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{pct_color};">
+              {pct_str}
+            </div>
+          </div>
+
+          <div style="flex:1;min-width:220px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
+                        letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
+            <div>{best_pills if best_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
+          </div>
+
+          <div style="flex:1;min-width:220px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
+                        letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div>
+            <div>{worst_pills if worst_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
+          </div>
+
         </div>
-      </div>
-      <div style="min-width:100px;">
-        <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
-                    letter-spacing:.04em;">% до плану</div>
-        <div style="font-size:1.1rem;font-weight:700;color:{pct_color};">{pct_str}</div>
-      </div>
-      <div style="flex:1;min-width:220px;">
-        <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                    letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
-        <div>{best_pills if best_pills else
-              '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
-      </div>
-      <div style="flex:1;min-width:220px;">
-        <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                    letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div>
-        <div>{worst_pills if worst_pills else
-              '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
-      </div>
-    </div>
-    """
-    st.markdown(metrics_html, unsafe_allow_html=True)
+        """
+        st.markdown(metrics_html, unsafe_allow_html=True)
 
     # ── Plotly Chart ─────────────────────────────────────────────
     x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
@@ -318,6 +275,7 @@ def render_article_block(title, table_df, col_tt, col_article,
                              line=dict(color=RED_LINE, width=3)))
     fig.add_trace(go.Scatter(x=x_axis, y=table_df["Delta"],   name="Дельта",
                              line=dict(color=YELLOW, dash="dot")))
+
     fig.update_layout(
         height=350,
         margin=dict(t=30, b=20, l=10, r=10),
@@ -353,16 +311,6 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     wb = Workbook()
     wb.remove(wb.active)
 
-    # Попередній розрахунок global_avg_std для всього df (один раз)
-    if group_factors:
-        global_avg_std = (
-            df[df[col_plf] == "F"]
-            .groupby(group_factors + [col_article], as_index=False)[col_value]
-            .agg(Average_Calc="mean", Std="std")
-        )
-    else:
-        global_avg_std = None
-
     # ── 1. Зведена таблиця ──────────────────────────────────────
     ws_p = wb.create_sheet("Зведена_таблиця")
     ws_p.freeze_panes = "B2"
@@ -380,8 +328,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
 
     for ri, article in enumerate(articles_to_show, 2):
         tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                    col_month, col_value, col_plf, article,
-                                    tt_val, group_factors, global_avg_std)
+                                    col_month, col_value, col_plf, article, tt_val, group_factors)
         vals = [article] + [tdf.loc[m, metric_col] for m in range(1, 13)]
         vals.append(sum(tdf.loc[m, metric_col] for m in range(1, 13)))
         for ci, v in enumerate(vals, 1):
@@ -396,7 +343,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 if isinstance(v, (int, float)) and v < 0:
                     c.font = Font(name="Arial", size=9, color="C0392B")
 
-    # ── 2. Листи по статтях ──────────────────────────────────────
+    # ── 2. Листи по статтях з графіками ─────────────────────────
     row_labels = ["План", "Факт", "Average", "Дельта"]
     row_keys   = ["Plan", "Fact", "Average", "Delta"]
     row_fills  = ["FFFFFF", "e8d5f5", "fde8e8", "fff9e0"]
@@ -404,8 +351,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
 
     for article in articles_to_show:
         tdf  = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                     col_month, col_value, col_plf, article,
-                                     tt_val, group_factors, global_avg_std)
+                                     col_month, col_value, col_plf, article, tt_val, group_factors)
         safe = article[:28].replace("/", "_").replace("\\", "_")
         ws   = wb.create_sheet(safe)
         ws.freeze_panes = "B3"
@@ -479,6 +425,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             font=dict(family="Arial"),
         )
 
+        # ── Виправлення FileNotFoundError: використовуємо BytesIO замість temp-файлу ──
         try:
             import plotly.io as pio
             img_bytes = pio.to_image(fig, format="png", scale=1.5)
@@ -488,7 +435,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             ws.add_image(img_obj)
         except Exception:
             ws.cell(row=7, column=1,
-                    value="⚠️ Графік недоступний (pip install kaleido)")
+                    value="⚠️ Графік недоступний (встановіть kaleido: pip install kaleido)")
 
     # ── 3. Heatmap ───────────────────────────────────────────────
     if group_factors:
@@ -558,6 +505,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 c.alignment = Alignment(horizontal="right")
                 if pd.isna(v):
                     c.value = None
+                    # ── Виправлення: біла заливка замість чорної для NaN ──
                     c.fill = hdr_fill("FFFFFF")
                 else:
                     c.value = float(v)
@@ -607,6 +555,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 ws_top.cell(row=ri2, column=start_col).font = Font(name="Arial", size=9)
                 c2 = ws_top.cell(row=ri2, column=start_col + 1,
                                   value=float(val_v) if pd.notna(val_v) else None)
+                # ── Розрядність: 0 знаків після коми, роздільник тисяч ──
                 c2.number_format = NUM_FMT
                 c2.border = thin_border()
                 c2.alignment = Alignment(horizontal="right")
@@ -615,6 +564,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                     hx2 = "{:02X}{:02X}{:02X}".format(
                         int(rgba2[0] * 255), int(rgba2[1] * 255), int(rgba2[2] * 255))
                     c2.fill = hdr_fill(hx2)
+                    # ── Перевіряємо контрастність для читабельності ──
                     r2, g2, b2 = int(rgba2[0]*255), int(rgba2[1]*255), int(rgba2[2]*255)
                     luminance = (0.299*r2 + 0.587*g2 + 0.114*b2) / 255
                     font_color = "000000" if luminance > 0.5 else "FFFFFF"
@@ -661,15 +611,9 @@ def main():
         st.info("Завантажте Excel-файл для початку роботи.")
         st.stop()
 
-    # ── Зчитуємо байти один раз і кешуємо ────────────────────────
-    file_bytes = file.read()
-    sheet_names = get_sheet_names(file_bytes, file.name)
-    sheet_name  = st.selectbox("Аркуш", sheet_names)
-    df = load_excel(file_bytes, file.name, sheet_name)
-
-    # Зберігаємо df у session_state для precompute_global_avg_std
-    st.session_state["_df_cache"] = df
-
+    xl = pd.ExcelFile(file)
+    sheet_name = st.selectbox("Аркуш", xl.sheet_names)
+    df = load_excel(file, sheet_name)
     cols = df.columns.tolist()
 
     with st.expander("⚙️ Налаштування колонок", expanded=True):
@@ -697,9 +641,6 @@ def main():
         with sh3:
             col_rik    = st.selectbox("Рік",            ["—"] + cols)
             col_mis    = st.selectbox("Місяць (шапка)", ["—"] + cols)
-
-    # ── Конвертуємо числовий стовпець одразу ────────────────────
-    df[col_value] = pd.to_numeric(df[col_value], errors="coerce")
 
     # ── Сайдбар: основні фільтри ─────────────────────────────────
     st.sidebar.markdown("## 🔍 Фільтри")
@@ -749,11 +690,11 @@ def main():
                 if extra_val3:
                     extra_filters[extra_col3] = extra_val3
 
-    # ── Попередня фільтрація для списку ТТ ───────────────────────
+    # ── Динамічний список ТТ за поточними фільтрами ──────────────
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🏪 ТТ за поточними фільтрами")
 
-    df_pre = df
+    df_pre = df.copy()
     if year_val:
         df_pre = df_pre[df_pre[col_year].isin(year_val)]
     if month_val:
@@ -767,13 +708,16 @@ def main():
 
     if visible_tts:
         st.sidebar.caption(f"Знайдено: {len(visible_tts)} магазинів")
+
         tt_search = st.sidebar.text_input(
             "🔎 Пошук ТТ", value="", placeholder="Введіть назву...", key="tt_search"
         )
+
         filtered_tts = (
             [tt for tt in visible_tts if tt_search.lower() in str(tt).lower()]
             if tt_search else visible_tts
         )
+
         btn_col1, btn_col2 = st.sidebar.columns(2)
         with btn_col1:
             if st.button("✅ Всі", key="tt_select_all", use_container_width=True):
@@ -781,6 +725,7 @@ def main():
         with btn_col2:
             if st.button("✖ Жодного", key="tt_clear_all", use_container_width=True):
                 st.session_state["tt_multiselect"] = []
+
         tt_val = st.sidebar.multiselect(
             "Оберіть ТТ:",
             options=filtered_tts,
@@ -792,6 +737,7 @@ def main():
         tt_val = []
 
     st.sidebar.markdown("---")
+
     mode = st.sidebar.selectbox(
         "Mode (Heatmap)", ["Delta", "Delta %", "Z-score", "Fact", "Average"]
     )
@@ -801,7 +747,8 @@ def main():
         default=[col_tt] if col_tt in df.columns else [],
     )
 
-    # ── Основна фільтрація ────────────────────────────────────────
+    df[col_value] = pd.to_numeric(df[col_value], errors="coerce")
+
     def apply_filters(d):
         if tt_val:     d = d[d[col_tt].isin(tt_val)]
         if year_val:   d = d[d[col_year].isin(year_val)]
@@ -820,22 +767,11 @@ def main():
         vals = df_store[col].dropna().unique()
         return str(vals[0]) if len(vals) else "—"
 
-    # ── Попередній розрахунок global_avg_std ─────────────────────
-    # Один раз на весь df — передаємо в build_article_monthly
-    if group_factors:
-        global_avg_std_cache = (
-            df[df[col_plf] == "F"]
-            .groupby(group_factors + [col_article], as_index=False)[col_value]
-            .agg(Average_Calc="mean", Std="std")
-        )
-    else:
-        global_avg_std_cache = None
-
     articles_all = sorted(df[col_article].dropna().unique(), key=str)
     st.markdown('<div class="article-selector">', unsafe_allow_html=True)
     sel_col1, sel_col2, sel_col3 = st.columns([3, 1, 1])
     with sel_col1:
-        st.markdown("**🎯 Стаття бюджету для аналізу**")
+        st.markdown("**🎯 Стаття бюджету для аналізу** — обери одну статтю або увімкни «Всі»")
         selected_article = st.selectbox(
             "article_selector", articles_all, key="global_article",
             label_visibility="collapsed",
@@ -889,17 +825,18 @@ def main():
         st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
         tdf = build_article_monthly(
             df, df_filtered, col_tt, col_article,
-            col_month, col_value, col_plf, article,
-            tt_val, group_factors, global_avg_std_cache
+            col_month, col_value, col_plf, article, tt_val, group_factors
         )
         render_article_block(
             title=article,
             table_df=tdf,
+            chart_title=f"Аналіз середньомісячного показника — {article}",
+            df_filtered=df_filtered,
             col_tt=col_tt,
-            col_article=col_article,      # ← передаємо назву колонки
+            col_article=col_article,
+            col_month=col_month,
             col_value=col_value,
             col_plf=col_plf,
-            df_filtered=df_filtered,      # ← df з усіма ТТ (не тільки вибрані)
         )
 
     # ── Зведена таблиця по статтях ───────────────────────────────
@@ -912,8 +849,7 @@ def main():
     rows_pivot = []
     for article in articles_to_show:
         tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                    col_month, col_value, col_plf, article,
-                                    tt_val, group_factors, global_avg_std_cache)
+                                    col_month, col_value, col_plf, article, tt_val, group_factors)
         row = {"Стаття": article}
         for m in range(1, 13):
             row[MONTH_LABELS[m]] = tdf.loc[m, metric_col]
@@ -948,26 +884,19 @@ def main():
 
     all_tts = sorted(df_filtered[col_tt].dropna().unique(), key=str)
 
-    # ── Оптимізація: масовий розрахунок замість циклу по ТТ ──────
-    grp_tt = list(dict.fromkeys([col_tt, col_article, "_m"]))
-    pl_agg = (df_num_tt[df_num_tt[col_plf] == "PL"]
-              .groupby(grp_tt)[col_value].sum().reset_index()
-              .rename(columns={col_value: "_plan"}))
-    fa_agg = (df_num_tt[df_num_tt[col_plf] == "F"]
-              .groupby(grp_tt)[col_value].sum().reset_index()
-              .rename(columns={col_value: "_fact"}))
-
     rows_tt = []
     for tt in all_tts:
-        sub_pl = pl_agg[pl_agg[col_tt] == tt]
-        sub_fa = fa_agg[fa_agg[col_tt] == tt]
+        sub = df_num_tt[df_num_tt[col_tt] == tt]
         for article in articles_to_show:
-            plan_m = sub_pl[sub_pl[col_article] == article].set_index("_m")["_plan"]
-            fact_m = sub_fa[sub_fa[col_article] == article].set_index("_m")["_fact"]
+            sub_a = sub[sub[col_article] == article]
+            plan_m = sub_a[sub_a[col_plf] == "PL"].groupby("_m")[col_value].sum()
+            fact_m = sub_a[sub_a[col_plf] == "F"].groupby("_m")[col_value].sum()
+
             row = {"ТТ": tt, "Стаття": article}
             for m in range(1, 13):
                 row[f"plan_{MONTH_LABELS[m]}"] = plan_m.get(m, 0)
                 row[f"fact_{MONTH_LABELS[m]}"] = fact_m.get(m, 0)
+
             row["Plan_РАЗОМ"] = sum(plan_m.get(m, 0) for m in range(1, 13))
             row["Fact_РАЗОМ"] = sum(fact_m.get(m, 0) for m in range(1, 13))
             row["Delta_РАЗОМ"] = row["Fact_РАЗОМ"] - row["Plan_РАЗОМ"]
@@ -1070,6 +999,7 @@ def main():
         fmt_dict.update({c: fmt_pct for c in pct_cols})
 
         styled = df_display.style.format(fmt_dict, na_rep="-")
+
         if pct_cols:
             styled = styled.background_gradient(
                 cmap="RdYlGn_r", subset=pd.IndexSlice[df_display.index[:-1], pct_cols], axis=None
@@ -1086,6 +1016,7 @@ def main():
                 cmap="Blues",
                 subset=pd.IndexSlice[df_display.index[:-1], other_num_cols], axis=None
             )
+
         styled = styled.apply(
             lambda row: [
                 "font-weight:bold; border-top:2px solid #5b2d8e;" for _ in row
@@ -1111,7 +1042,7 @@ def main():
     if group_factors:
         df_num = df.copy()
         df_num[col_value] = pd.to_numeric(df_num[col_value], errors="coerce")
-        global_avg_std_heat = (
+        global_avg_std = (
             df_num[df_num[col_plf] == "F"]
             .groupby(group_factors + [col_article], as_index=False)[col_value]
             .agg(Average_Calc="mean", Std="std")
@@ -1127,7 +1058,7 @@ def main():
             .sum().rename(columns={col_value: "Fact"})
         )
         merge_cols = list(dict.fromkeys(group_factors + [col_article]))
-        tt_table = pd.merge(tt_table, global_avg_std_heat, on=merge_cols, how="left")
+        tt_table = pd.merge(tt_table, global_avg_std, on=merge_cols, how="left")
         tt_table["Delta"]   = tt_table["Fact"] - tt_table["Average_Calc"]
         tt_table["Delta_%"] = tt_table["Delta"] / tt_table["Average_Calc"].replace(0, np.nan)
         tt_table["Z"]       = tt_table["Delta"] / tt_table["Std"].replace(0, np.nan)
