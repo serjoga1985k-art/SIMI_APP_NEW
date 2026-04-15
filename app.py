@@ -239,7 +239,31 @@ def render_article_block(title, table_df, chart_title,
             st.info("Немає даних по магазинах для цієї статті.")
     else:
         st.caption("Список магазинів недоступний")
-                        )
+def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
+                 col_plf, articles_to_show, tt_val, group_factors, metric_col,
+                 mode, pivot_df):
+    import openpyxl
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.drawing.image import Image as XLImage
+
+    NUM_FMT = '# ##0;-# ##0;-'
+
+    def hdr_fill(h):
+        h = h.lstrip("#")
+        return PatternFill("solid", start_color=h, end_color=h)
+
+    def thin_border():
+        s = Side(style="thin", color="AAAAAA")
+        return Border(left=s, right=s, top=s, bottom=s)
+
+    def scw(ws, ci, w):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    month_labels_list = [MONTH_LABELS[m] for m in range(1, 13)]
+    wb = Workbook()
+    wb.remove(wb.active)                    
     # ── 1. Зведена таблиця ──────────────────────────────────────
     ws_p = wb.create_sheet("Зведена_таблиця")
     ws_p.freeze_panes = "B2"
