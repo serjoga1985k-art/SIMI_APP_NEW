@@ -515,9 +515,6 @@ def set_single_store(store_name):
     st.session_state["tt_multiselect"] = [store_name]
 
 
-def main():
-    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
-    # (твій існуючий код main() починається тут)
 
 def main():
 
