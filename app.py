@@ -301,109 +301,25 @@ def render_article_block(title, table_df, col_tt, col_article,
     )
     st.plotly_chart(fig, use_container_width=True)
 
-
-def render_tt_slicer(title, df_filtered, col_tt, col_article):
-    """
-    Рендерить TT slicer як окремий блок (безпечна робота з session_state)
-    """
+    # ── Розширений TT multiselect під графіком ──────────────────────────
     article_data = df_filtered[df_filtered[col_article] == title].copy()
     available_tts = sorted(article_data[col_tt].dropna().unique(), key=str)
     
-    if not available_tts:
-        st.info("Немає даних по магазинах для цієї статті.")
-        return
-
-    st.markdown("""
-    <style>
-    .slicer-container {
-        border: 2px solid #d0baf5;
-        border-radius: 6px;
-        padding: 10px;
-        background: #fafbff;
-        margin: 8px 0;
-    }
-    .slicer-title {
-        font-weight: 700;
-        font-size: 0.85rem;
-        color: #5b2d8e;
-        margin-bottom: 6px;
-    }
-    .slicer-buttons {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 3px;
-    }
-    .slicer-btn {
-        padding: 4px 8px;
-        border: 1px solid #b8a8d8;
-        border-radius: 3px;
-        background: #ffffff;
-        color: #333;
-        font-size: 0.7rem;
-        font-weight: 500;
-        cursor: pointer;
-        white-space: nowrap;
-    }
-    .slicer-btn:hover {
-        background: #e8d5f5;
-        border-color: #5b2d8e;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    slicer_key = f"tt_slicer_{title}"
-    
-    # Ініціалізація session_state
-    if slicer_key not in st.session_state:
-        st.session_state[slicer_key] = set()
-    
-    current_selected = st.session_state[slicer_key]
-    
-    # Header з кнопками
-    col1, col2, col3 = st.columns([0.7, 0.15, 0.15])
-    with col1:
-        st.markdown("<div class='slicer-title'>🏪 Магазини</div>", unsafe_allow_html=True)
-    with col2:
-        if st.button("✅ Всі", key=f"slicer_all_{title}", use_container_width=True):
-            st.session_state[slicer_key] = set(available_tts)
-            st.rerun()
-    with col3:
-        if st.button("✖ Очист.", key=f"slicer_clear_{title}", use_container_width=True):
-            st.session_state[slicer_key] = set()
-            st.rerun()
-    
-    # Кнопки магазинів
-    cols_per_row = 18
-    num_rows = (len(available_tts) + cols_per_row - 1) // cols_per_row
-    
-    for row_idx in range(num_rows):
-        cols = st.columns(cols_per_row)
-        start_idx = row_idx * cols_per_row
-        end_idx = min(start_idx + cols_per_row, len(available_tts))
+    if available_tts:
+        st.markdown("**🏪 Магазини для аналізу:**")
+        tt_selected = st.multiselect(
+            "Оберіть магазини",
+            options=available_tts,
+            default=st.session_state.get("tt_multiselect", []),
+            key=f"tt_select_{title}",
+            label_visibility="collapsed"
+        )
         
-        for col_idx, tt_idx in enumerate(range(start_idx, end_idx)):
-            with cols[col_idx]:
-                tt_val = available_tts[tt_idx]
-                is_selected = tt_val in current_selected
-                btn_key = f"slicer_tt_{title}_{tt_idx}".replace(" ", "_").replace("/", "_")
-                
-                if st.button(
-                    f"{tt_val}",
-                    key=btn_key,
-                    use_container_width=True,
-                ):
-                    # Toggle
-                    if tt_val in current_selected:
-                        current_selected.discard(tt_val)
-                    else:
-                        current_selected.add(tt_val)
-                    
-                    st.session_state[slicer_key] = current_selected
-                    st.rerun()
-    
-    # Синхронізація з sidebar multiselect
-    if current_selected:
-        st.session_state["tt_multiselect"] = list(current_selected)
+        # Оновлюємо global tt_multiselect
+        if tt_selected:
+            st.session_state["tt_multiselect"] = tt_selected
+    else:
+        st.info("Немає даних по магазинах для цієї статті.")
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
@@ -970,8 +886,6 @@ def main():
             col_plf=col_plf,
             df_filtered=df_filtered,
         )
-        # Рендерим slicer ПІСЛЯ основного блоку
-        render_tt_slicer(article, df_filtered, col_tt, col_article)
 
     st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
     st.subheader("📋 Зведена таблиця")
@@ -1056,7 +970,7 @@ def main():
 
         df_tt_agg = df_tt_pivot.groupby("ТТ")[numeric_cols].sum().reset_index()
         df_tt_agg["Pct_РАЗОМ"] = df_tt_agg.apply(
-            lambda r: (r["Fact_РАЗОМ"] / r["Plan_РАЗОМ"] - 1) * 100
+            lambda r: (r["Fact_РАЗОМ"] / r["Plan_РА��ОМ"] - 1) * 100
             if r["Plan_РАЗОМ"] != 0 else None, axis=1
         )
         for m in range(1, 13):
@@ -1082,7 +996,7 @@ def main():
                     display_cols.append(f"pct_{ml}")
                     col_labels[f"pct_{ml}"] = f"{ml} %"
         else:
-            display_cols = ["ТТ"]
+            display_cols = ["��Т"]
             col_labels   = {"ТТ": "ТТ"}
 
         if tt_metric_col == "Fact":
@@ -1143,7 +1057,7 @@ def main():
                 cmap="RdYlGn_r", subset=pd.IndexSlice[df_display.index[:-1], pct_cols], axis=None
             )
         delta_num_cols = [c for c in num_cols if "Δ" in c]
-        other_num_cols = [c for c in num_cols if "Δ" not in c]
+        other_num_cols = [c for c in num_cols if "Δ" не in c]
         if delta_num_cols:
             styled = styled.background_gradient(
                 cmap="RdYlGn_r",
@@ -1224,7 +1138,7 @@ def main():
         st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
         st.subheader("🏆 TOP / ANTITOP магазинів")
         sum_val = tt_table.groupby(col_tt)[val_col].sum().reset_index()
-        n_tt    = st.slider("Кількість ��агазинів", 1, 100, 10)
+        n_tt    = st.slider("Кількість магазинів", 1, 100, 10)
         top     = sum_val.sort_values(val_col, ascending=True).head(n_tt)
         antitop = sum_val.sort_values(val_col, ascending=False).head(n_tt)
         ca, cb  = st.columns(2)
@@ -1248,7 +1162,7 @@ def main():
     st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
     st.subheader("📥 Експорт в Excel")
     st.download_button(
-        label="⬇�� Скачати дашборд як Excel",
+        label="⬇️ Скачати дашборд як Excel",
         data=export_excel(
             df, df_filtered, col_tt, col_article, col_month, col_value,
             col_plf, articles_to_show, tt_val, group_factors, metric_col,
