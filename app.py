@@ -595,7 +595,6 @@ def set_single_store(store_name):
 
 
 def main():
-
     """Callback: фільтрує весь дашборд тільки на один магазин"""
     st.session_state["tt_multiselect"] = [store_name]
     st.set_page_config(page_title="СІМІ Dashboard", layout="wide")
