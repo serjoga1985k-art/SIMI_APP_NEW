@@ -767,8 +767,8 @@ for i, tt in enumerate(filtered_tts):
 # оновлюємо state
 st.session_state[state_key] = set(selected)
 
-tt_val = list(st.session_state[state_key])
-     else:
+    tt_val = list(st.session_state[state_key])
+    else:
         st.sidebar.warning("Немає ТТ за обраними фільтрами.")
         tt_val = []
 
