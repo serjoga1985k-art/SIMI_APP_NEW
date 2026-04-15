@@ -126,20 +126,19 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
 def render_article_block(title, table_df, chart_title,
                          df_filtered=None, col_tt=None, col_article=None,
                          col_month=None, col_value=None, col_plf=None):
-    
     rows = {
-        "План": ("Plan", "#ffffff", "#333333"),
-        "Факт": ("Fact", "#e8d5f5", PURPLE),
+        "План":    ("Plan",    "#ffffff", "#333333"),
+        "Факт":    ("Fact",    "#e8d5f5", PURPLE),
         "Average": ("Average", "#fde8e8", RED_LINE),
-        "Дельта": ("Delta", "#fff9e0", "#b8860b"),
+        "Дельта":  ("Delta",   "#fff9e0", "#b8860b"),
     }
     month_cols = [MONTH_LABELS[m] for m in range(1, 13)]
+
     th = ("background:#2e7d32;color:white;font-weight:bold;border:1px solid #aaa;"
           "padding:4px 8px;text-align:center;font-size:0.78rem;")
     td = "border:1px solid #ccc;padding:3px 7px;text-align:right;font-size:0.78rem;"
     tl = "border:1px solid #ccc;padding:3px 7px;font-size:0.78rem;font-weight:600;white-space:nowrap;"
 
-    # HTML таблиця
     html = f"""
     <div style="margin-top:20px; margin-bottom:4px;">
       <span style="background:{GREEN_HDR};color:white;font-weight:700;padding:4px 14px;
@@ -165,103 +164,127 @@ def render_article_block(title, table_df, chart_title,
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
-    # Метрики (залишаються без змін)
-    if df_filtered is not None and col_tt and col_article and col_value and col_plf and col_month:
+    # ── Метрики над діаграмою ────────────────────────────────────
+    if (df_filtered is not None and col_tt and col_article
+            and col_value and col_plf and col_month):
+
         facts = [table_df.loc[m, "Fact"] for m in range(1, 13)]
         non_zero_facts = [f for f in facts if f != 0]
         avg_monthly = np.mean(non_zero_facts) if non_zero_facts else 0
-        total_fact = sum(facts)
-        total_plan = sum(table_df.loc[m, "Plan"] for m in range(1, 13))
+
+        total_fact  = sum(facts)
+        total_plan  = sum(table_df.loc[m, "Plan"] for m in range(1, 13))
         total_delta = total_fact - total_plan
         pct_vs_plan = ((total_fact / total_plan - 1) * 100) if total_plan != 0 else None
-        pct_str = (f"{'+' if pct_vs_plan >= 0 else ''}{pct_vs_plan:.1f}%" if pct_vs_plan is not None else "—")
+
+        pct_str = (f"{'+' if pct_vs_plan >= 0 else ''}{pct_vs_plan:.1f}%"
+                   if pct_vs_plan is not None else "—")
         pct_color = RED_LINE if (pct_vs_plan or 0) > 0 else GREEN_HDR
 
-        sub = df_filtered[(df_filtered[col_article] == title) & (df_filtered[col_plf] == "F")].copy()
+        sub = df_filtered[
+            (df_filtered[col_article] == title) &
+            (df_filtered[col_plf] == "F")
+        ].copy()
         sub[col_value] = pd.to_numeric(sub[col_value], errors="coerce")
 
-        best_pills = worst_pills = ""
+        best_pills  = ""
+        worst_pills = ""
+
         if not sub.empty and col_tt in sub.columns:
-            tt_totals = sub.groupby(col_tt)[col_value].sum().dropna().sort_values()
+            tt_totals = (
+                sub.groupby(col_tt)[col_value]
+                .sum()
+                .dropna()
+                .sort_values()
+            )
             n = min(3, len(tt_totals))
+
             def make_pills(series, color, bg):
                 pills = ""
                 for tt, val in series.items():
                     sign = "+" if val > 0 else ""
+                    # Форматування: 0 знаків після коми, роздільник тисяч пробілом
                     val_fmt = f"{val:,.0f}".replace(",", " ")
-                    pills += f'<span style="display:inline-block;background:{bg};color:{color};border-radius:4px;padding:2px 9px;margin:2px 3px;font-size:0.75rem;font-weight:600;white-space:nowrap;">{tt}&nbsp;<span style="opacity:.7;font-weight:400;">({sign}{val_fmt})</span></span>'
+                    pills += (
+                        f'<span style="display:inline-block;background:{bg};color:{color};'
+                        f'border-radius:4px;padding:2px 9px;margin:2px 3px;font-size:0.75rem;'
+                        f'font-weight:600;white-space:nowrap;">'
+                        f'{tt}&nbsp;<span style="opacity:.7;font-weight:400;">'
+                        f'({sign}{val_fmt})</span></span>'
+                    )
                 return pills
-            best_pills = make_pills(tt_totals.head(n), "#1b5e20", "#e8f5e9")
+
+            # Кращі = мінімальний Fact (економія / найменший витрата)
+            best_pills  = make_pills(tt_totals.head(n),          "#1b5e20", "#e8f5e9")
+            # Гірші = максимальний Fact (переліміт / найбільша витрата)
             worst_pills = make_pills(tt_totals.tail(n).iloc[::-1], "#7f0000", "#ffebee")
 
         delta_color = RED_LINE if total_delta > 0 else GREEN_HDR
+
         metrics_html = f"""
-        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;background:#f9f6ff;border:1px solid #d0baf5;border-radius:6px;padding:10px 16px;margin:6px 0 10px 0;">
-          <div style="min-width:130px;"><div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;letter-spacing:.04em;">Серед. Fact / міс.</div><div style="font-size:1.1rem;font-weight:700;color:{PURPLE};">{avg_monthly:,.0f}</div></div>
-          <div style="min-width:130px;"><div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;letter-spacing:.04em;">Δ Fact − Plan</div><div style="font-size:1.1rem;font-weight:700;color:{delta_color};">{('+' if total_delta > 0 else '')}{total_delta:,.0f}</div></div>
-          <div style="min-width:100px;"><div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;letter-spacing:.04em;">% до плану</div><div style="font-size:1.1rem;font-weight:700;color:{pct_color};">{pct_str}</div></div>
-          <div style="flex:1;min-width:220px;"><div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div><div>{best_pills if best_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div></div>
-          <div style="flex:1;min-width:220px;"><div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div><div>{worst_pills if worst_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;
+                    background:#f9f6ff;border:1px solid #d0baf5;border-radius:6px;
+                    padding:10px 16px;margin:6px 0 10px 0;">
+
+          <div style="min-width:130px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
+                        letter-spacing:.04em;">Серед. Fact / міс.</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{PURPLE};">
+              {avg_monthly:,.0f}
+            </div>
+          </div>
+
+          <div style="min-width:130px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
+                        letter-spacing:.04em;">Δ Fact − Plan</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{delta_color};">
+              {('+' if total_delta > 0 else '')}{total_delta:,.0f}
+            </div>
+          </div>
+
+          <div style="min-width:100px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:2px;text-transform:uppercase;
+                        letter-spacing:.04em;">% до плану</div>
+            <div style="font-size:1.1rem;font-weight:700;color:{pct_color};">
+              {pct_str}
+            </div>
+          </div>
+
+          <div style="flex:1;min-width:220px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
+                        letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
+            <div>{best_pills if best_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
+          </div>
+
+          <div style="flex:1;min-width:220px;">
+            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
+                        letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div>
+            <div>{worst_pills if worst_pills else '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
+          </div>
+
         </div>
         """
         st.markdown(metrics_html, unsafe_allow_html=True)
 
-    # Графік
+    # ── Plotly Chart ─────────────────────────────────────────────
     x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=x_axis, y=table_df["Plan"], name="План", marker_color=GREY))
-    fig.add_trace(go.Bar(x=x_axis, y=table_df["Fact"], name="Факт", marker_color=PURPLE))
-    fig.add_trace(go.Scatter(x=x_axis, y=table_df["Average"], name="Average", line=dict(color=RED_LINE, width=3)))
-    fig.add_trace(go.Scatter(x=x_axis, y=table_df["Delta"], name="Дельта", line=dict(color=YELLOW, dash="dot")))
-    fig.update_layout(height=350, margin=dict(t=30, b=20, l=10, r=10), barmode="group", hovermode="x unified")
+    fig.add_trace(go.Bar(x=x_axis, y=table_df["Plan"],    name="План",    marker_color=GREY))
+    fig.add_trace(go.Bar(x=x_axis, y=table_df["Fact"],    name="Факт",    marker_color=PURPLE))
+    fig.add_trace(go.Scatter(x=x_axis, y=table_df["Average"], name="Average",
+                             line=dict(color=RED_LINE, width=3)))
+    fig.add_trace(go.Scatter(x=x_axis, y=table_df["Delta"],   name="Дельта",
+                             line=dict(color=YELLOW, dash="dot")))
+
+    fig.update_layout(
+        height=350,
+        margin=dict(t=30, b=20, l=10, r=10),
+        barmode="group",
+        hovermode="x unified",
+    )
     st.plotly_chart(fig, use_container_width=True)
 
-        # ==================== S L I C E R (як в Excel) ====================
-    st.markdown("**🏪 Slicer — вибір магазинів для цієї статті**")
-    if df_filtered is not None and col_tt and col_article:
-        article_df = df_filtered[df_filtered[col_article] == title]
-        all_stores = sorted(article_df[col_tt].dropna().unique().tolist())
 
-        if all_stores:
-            # Ключ для збереження вибору для кожної статті
-            session_key = f"article_stores_{title}"
-
-            col1, col2, col3 = st.columns([5, 1, 1])
-            with col1:
-                selected_stores = st.multiselect(
-                    label="Оберіть магазини",
-                    options=all_stores,
-                    default=st.session_state.get(session_key, all_stores[:8]),  # перші 8 за замовчуванням
-                    key=f"store_slicer_{title}",
-                    placeholder="Пошук або вибір магазинів..."
-                )
-            
-            with col2:
-                if st.button("✅ Всі", use_container_width=True, key=f"all_btn_{title}"):
-                    st.session_state[session_key] = all_stores.copy()
-                    st.rerun()
-            with col3:
-                if st.button("❌ Очистити", use_container_width=True, key=f"clear_btn_{title}"):
-                    st.session_state[session_key] = []
-                    st.rerun()
-
-            # Зберігаємо вибір
-            st.session_state[session_key] = selected_stores
-
-            # Показ вибраних магазинів
-            if selected_stores:
-                st.success("**Вибрано:** " + ", ".join(map(str, selected_stores)))
-            else:
-                st.warning("Жоден магазин не вибрано. Дані будуть порожніми.")
-
-            # Важливо: фільтруємо tt_val для цієї статті
-            current_tt_val = selected_stores
-        else:
-            st.info("Немає магазинів для цієї статті.")
-            current_tt_val = []
-    else:
-        st.caption("Список магазинів недоступний")
-        current_tt_val = []
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                  col_plf, articles_to_show, tt_val, group_factors, metric_col,
                  mode, pivot_df):
@@ -286,7 +309,8 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
 
     month_labels_list = [MONTH_LABELS[m] for m in range(1, 13)]
     wb = Workbook()
-    wb.remove(wb.active)                    
+    wb.remove(wb.active)
+
     # ── 1. Зведена таблиця ──────────────────────────────────────
     ws_p = wb.create_sheet("Зведена_таблиця")
     ws_p.freeze_panes = "B2"
@@ -557,9 +581,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     wb.save(output)
     output.seek(0)
     return output
-def set_single_store(store_name):
-    st.session_state["tt_multiselect"] = [store_name]
-    st.rerun()
+
 
 def main():
     st.set_page_config(page_title="СІМІ Dashboard", layout="wide")
