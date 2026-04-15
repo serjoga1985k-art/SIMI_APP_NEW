@@ -313,12 +313,40 @@ def render_article_block(title, table_df, chart_title,
                 if st.button("✖ Очистити", key=f"none_{title}", use_container_width=True):
                     st.session_state[f"tt_local_{title}"] = []
 
-            selected_local_tts = st.multiselect(
-                "Оберіть магазини:",
-                options=filtered_tts,
-                default=st.session_state.get(f"tt_local_{title}", filtered_tts),
-                key=f"tt_local_{title}"
-            )
+            # Ініціалізація стану
+state_key = f"tt_local_{title}"
+if state_key not in st.session_state:
+    st.session_state[state_key] = set(filtered_tts)
+
+# Кнопки
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("✅ Всі", key=f"all_{title}", use_container_width=True):
+        st.session_state[state_key] = set(filtered_tts)
+
+with col2:
+    if st.button("✖ Очистити", key=f"none_{title}", use_container_width=True):
+        st.session_state[state_key] = set()
+
+# Слайсер як в Excel
+selected_local_tts = []
+container = st.container()
+
+with container:
+    for tt in filtered_tts:
+        checked = tt in st.session_state[state_key]
+
+        new_val = st.checkbox(
+            str(tt),
+            value=checked,
+            key=f"{state_key}_{tt}"
+        )
+
+        if new_val:
+            selected_local_tts.append(tt)
+
+    # оновлюємо state
+    st.session_state[state_key] = set(selected_local_tts)
 
             # ── ПЕРЕБУДОВА ГРАФІКА ПО ВИБРАНИХ ТТ ─────────────────
             if selected_local_tts:
