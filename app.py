@@ -853,55 +853,7 @@ def main():
             df, df_filtered, col_tt, col_article,
             col_month, col_value, col_plf, article, tt_val, group_factors
         )
-        render_article_block(
-                selected_tts, selected_year, extra_filters = render_article_block(
-        selected_article, table_df, "Аналіз", df_filtered,
-        col_tt, col_article, col_month, col_value, col_plf
-        )
-
-    # Застосування фільтрів
-    df_filtered2 = df_filtered.copy()
-    if selected_year:
-        df_filtered2 = df_filtered2[df_filtered2[col_year] == selected_year]
-    if selected_tts:
-        df_filtered2 = df_filtered2[df_filtered2[col_tt].isin(selected_tts)]
-    if "city" in extra_filters:
-        df_filtered2 = df_filtered2[df_filtered2["Місто"].isin(extra_filters["city"])]
-    if "format" in extra_filters:
-        df_filtered2 = df_filtered2[df_filtered2["Формат ТО"].isin(extra_filters["format"])]
-
-    # Перерахунок таблиці з урахуванням фільтрів
-    table_df2 = build_article_monthly(df, df_filtered2, col_tt, col_article,
-                                      col_month, col_value, col_plf,
-                                      selected_article, selected_tts, [])
-    st.markdown("### 📈 Дані після застосування фільтрів")
-    st.dataframe(table_df2)
-
-    # ── Зведена таблиця по статтях ───────────────────────────────
-    st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
-    st.subheader("📋 Зведена таблиця")
-    pivot_metric = st.radio("Метрика", ["Fact", "Plan", "Delta (Fact-Plan)"], horizontal=True)
-    col_map_d    = {"Fact": "Fact", "Plan": "Plan", "Delta (Fact-Plan)": "Delta"}
-    metric_col   = col_map_d[pivot_metric]
-
-    rows_pivot = []
-    for article in articles_to_show:
-        tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                    col_month, col_value, col_plf, article, tt_val, group_factors)
-        row = {"Стаття": article}
-        for m in range(1, 13):
-            row[MONTH_LABELS[m]] = tdf.loc[m, metric_col]
-        row["РАЗОМ"] = sum(tdf.loc[m, metric_col] for m in range(1, 13))
-        rows_pivot.append(row)
-
-    pivot_df = pd.DataFrame(rows_pivot).set_index("Стаття")
-    cmap_p = "RdYlGn_r" if pivot_metric == "Delta (Fact-Plan)" else "Blues"
-    st.dataframe(
-        pivot_df.style
-            .background_gradient(cmap=cmap_p, axis=None)
-            .format(lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-", na_rep="-"),
-        use_container_width=True,
-    )
+        render_article_block(render_article_block)
 
     # ── Зведена таблиця в розрізі ТТ ─────────────────────────────
     st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
