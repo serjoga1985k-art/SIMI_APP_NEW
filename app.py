@@ -726,48 +726,12 @@ def main():
             if st.button("✖ Жодного", key="tt_clear_all", use_container_width=True):
                 st.session_state["tt_multiselect"] = []
 
-        # ── GRID-СЛАЙСЕР ТТ ─────────────────────────────
-st.sidebar.markdown("**Оберіть ТТ:**")
-
-state_key = "tt_multiselect"
-
-# ініціалізація
-if state_key not in st.session_state:
-    st.session_state[state_key] = set(filtered_tts)
-
-# кнопки
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    if st.button("✅ Всі", key="tt_all", use_container_width=True):
-        st.session_state[state_key] = set(filtered_tts)
-
-with col2:
-    if st.button("✖ Жодного", key="tt_none", use_container_width=True):
-        st.session_state[state_key] = set()
-
-# GRID (як плитки)
-selected = []
-cols = st.sidebar.columns(3)  # 🔥 кількість колонок (можеш змінити)
-
-for i, tt in enumerate(filtered_tts):
-    col = cols[i % 3]
-
-    with col:
-        checked = tt in st.session_state[state_key]
-
-        val = st.checkbox(
-            str(tt),
-            value=checked,
-            key=f"tt_{tt}"
+        tt_val = st.sidebar.multiselect(
+            "Оберіть ТТ:",
+            options=filtered_tts,
+            default=st.session_state.get("tt_multiselect", []),
+            key="tt_multiselect",
         )
-
-        if val:
-            selected.append(tt)
-
-# оновлюємо state
-st.session_state[state_key] = set(selected)
-
-    tt_val = list(st.session_state[state_key])
     else:
         st.sidebar.warning("Немає ТТ за обраними фільтрами.")
         tt_val = []
