@@ -329,10 +329,10 @@ with col2:
         st.session_state[state_key] = set()
 
 # Слайсер як в Excel
-selected_local_tts = []
-container = st.container()
+    selected_local_tts = []
+    container = st.container()
 
-with container:
+    with container:
     for tt in filtered_tts:
         checked = tt in st.session_state[state_key]
 
