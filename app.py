@@ -283,6 +283,48 @@ def render_article_block(title, table_df, chart_title,
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
+    # ── ФІЛЬТРИ ПІД ГРАФІКОМ ─────────────────────────────
+st.markdown("### 🔎 Додаткові фільтри для цієї статті")
+
+col_f1, col_f2, col_f3 = st.columns(3)
+
+with col_f1:
+    local_tt = st.multiselect(
+        "🏪 ТТ",
+        options=sorted(df_filtered[col_tt].dropna().unique(), key=str),
+        default=st.session_state.get(f"tt_{title}", []),
+        key=f"tt_{title}"
+    )
+
+with col_f2:
+    local_extra_col = st.selectbox(
+        "Фільтр 1 (колонка)",
+        ["—"] + [c for c in df_filtered.columns if c not in [col_tt]],
+        key=f"extra_col1_{title}"
+    )
+
+    local_extra_val = []
+    if local_extra_col != "—":
+        local_extra_val = st.multiselect(
+            "Значення",
+            sorted(df_filtered[local_extra_col].dropna().unique(), key=str),
+            key=f"extra_val1_{title}"
+        )
+
+with col_f3:
+    local_extra_col2 = st.selectbox(
+        "Фільтр 2 (колонка)",
+        ["—"] + [c for c in df_filtered.columns if c not in [col_tt]],
+        key=f"extra_col2_{title}"
+    )
+
+    local_extra_val2 = []
+    if local_extra_col2 != "—":
+        local_extra_val2 = st.multiselect(
+            "Значення",
+            sorted(df_filtered[local_extra_col2].dropna().unique(), key=str),
+            key=f"extra_val2_{title}"
+        )
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
@@ -327,8 +369,30 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         scw(ws_p, ci, 11)
 
     for ri, article in enumerate(articles_to_show, 2):
-        tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                    col_month, col_value, col_plf, article, tt_val, group_factors)
+        df_local = df_filtered.copy()
+
+local_tt = st.session_state.get(f"tt_{article}", [])
+if local_tt:
+    df_local = df_local[df_local[col_tt].isin(local_tt)]
+
+extra_col1 = st.session_state.get(f"extra_col1_{article}")
+extra_val1 = st.session_state.get(f"extra_val1_{article}")
+
+if extra_col1 and extra_col1 != "—" and extra_val1:
+    df_local = df_local[df_local[extra_col1].isin(extra_val1)]
+
+extra_col2 = st.session_state.get(f"extra_col2_{article}")
+extra_val2 = st.session_state.get(f"extra_val2_{article}")
+
+if extra_col2 and extra_col2 != "—" and extra_val2:
+    df_local = df_local[df_local[extra_col2].isin(extra_val2)]
+
+tdf = build_article_monthly(
+    df, df_local, col_tt, col_article,
+    col_month, col_value, col_plf, article,
+    local_tt if local_tt else tt_val,
+    group_factors
+)
         vals = [article] + [tdf.loc[m, metric_col] for m in range(1, 13)]
         vals.append(sum(tdf.loc[m, metric_col] for m in range(1, 13)))
         for ci, v in enumerate(vals, 1):
