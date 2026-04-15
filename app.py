@@ -306,7 +306,7 @@ def render_article_block(title, table_df, col_tt, col_article,
     """
     st.markdown(metrics_html, unsafe_allow_html=True)
 
-    # ── Plotly Chart (зменшена висота) ─────────────────────────────────────────────
+    # ── Plotly Chart (зменшена висота) ──────────────────────────
     x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
     fig = go.Figure()
     fig.add_trace(go.Bar(x=x_axis, y=table_df["Plan"],    name="План",    marker_color=GREY))
@@ -323,40 +323,81 @@ def render_article_block(title, table_df, col_tt, col_article,
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── КОМПАКТНІ КНОПКИ ТТ (20 на рядок, миниатюрні) ──────────────────────────────
+    # ── SLICER СТИЛЬ ТТ (як в Excel) ─────────────────────────────────
     article_data = df_filtered[df_filtered[col_article] == title].copy()
     available_tts = sorted(article_data[col_tt].dropna().unique(), key=str)
     
     if available_tts:
+        # Інітіалізація session_state якщо потрібно
+        if f"tt_slicer_{title}" not in st.session_state:
+            st.session_state[f"tt_slicer_{title}"] = set()
+
         st.markdown("""
         <style>
-        .tt-compact-buttons {
+        .slicer-container {
+            border: 2px solid #d0baf5;
+            border-radius: 6px;
+            padding: 10px;
+            background: #fafbff;
+            margin: 8px 0;
+        }
+        .slicer-title {
+            font-weight: 700;
+            font-size: 0.9rem;
+            color: #5b2d8e;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .slicer-buttons {
             display: flex;
             flex-wrap: wrap;
-            gap: 2px;
-            margin-top: 4px;
+            gap: 4px;
         }
-        .tt-compact-button {
-            display: inline-block;
-            padding: 2px 5px;
-            font-size: 0.65rem;
-            border: 1px solid #ccc;
-            border-radius: 2px;
-            cursor: pointer;
-            background: #f0f0f0;
+        .slicer-btn {
+            padding: 5px 10px;
+            border: 1px solid #b8a8d8;
+            border-radius: 3px;
+            background: #ffffff;
             color: #333;
-            transition: all 0.2s;
-            min-width: 28px;
-            text-align: center;
+            font-size: 0.75rem;
             font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
         }
-        .tt-compact-button:hover {
-            background: #e8e8e8;
+        .slicer-btn:hover {
+            background: #e8d5f5;
+            border-color: #5b2d8e;
+        }
+        .slicer-btn-active {
+            background: #5b2d8e;
+            color: white;
+            border-color: #5b2d8e;
+            font-weight: 600;
         }
         </style>
         """, unsafe_allow_html=True)
         
-        cols_per_row = 20
+        # Slicer header з кнопками Clear / Select All
+        slicer_key = f"tt_slicer_{title}"
+        current_selected = st.session_state.get(slicer_key, set())
+        
+        col1, col2, col3 = st.columns([0.7, 0.15, 0.15])
+        with col1:
+            st.markdown(f"<div class='slicer-title'>🏪 Магазини</div>", unsafe_allow_html=True)
+        with col2:
+            if st.button("✅ Всі", key=f"slicer_all_{title}", use_container_width=True, help="Вибрати всі"):
+                st.session_state[slicer_key] = set(available_tts)
+                st.rerun()
+        with col3:
+            if st.button("✖ Очистити", key=f"slicer_clear_{title}", use_container_width=True, help="Очистити вибір"):
+                st.session_state[slicer_key] = set()
+                st.rerun()
+        
+        # Кнопки магазинів
+        cols_per_row = 16
         num_rows = (len(available_tts) + cols_per_row - 1) // cols_per_row
         
         for row_idx in range(num_rows):
@@ -367,20 +408,32 @@ def render_article_block(title, table_df, col_tt, col_article,
             for col_idx, tt_idx in enumerate(range(start_idx, end_idx)):
                 with cols[col_idx]:
                     tt_val = available_tts[tt_idx]
-                    btn_key = f"tt_btn_{title}_{tt_val}".replace(" ", "_").replace("/", "_")
+                    is_selected = tt_val in current_selected
+                    btn_key = f"slicer_tt_{title}_{tt_val}".replace(" ", "_").replace("/", "_")
+                    
+                    btn_style = "slicer-btn slicer-btn-active" if is_selected else "slicer-btn"
                     
                     if st.button(
                         f"{tt_val}",
                         key=btn_key,
                         use_container_width=True,
-                        help=f"Додати {tt_val} до вибору"
+                        help=f"Натисніть для вибору/скасування {tt_val}"
                     ):
-                        # Додаємо до tt_multiselect в сайдбарі
-                        current_selection = st.session_state.get("tt_multiselect", [])
-                        if tt_val not in current_selection:
-                            current_selection.append(tt_val)
-                            st.session_state["tt_multiselect"] = current_selection
+                        # Toggling logic
+                        if tt_val in current_selected:
+                            current_selected.discard(tt_val)
+                        else:
+                            current_selected.add(tt_val)
+                        
+                        st.session_state[slicer_key] = current_selected
                         st.rerun()
+        
+        # Оновлюємо tt_multiselect на основі slicer вибору
+        if current_selected:
+            st.session_state["tt_multiselect"] = list(current_selected)
+        
+    else:
+        st.info("Немає даних по магазинах для цієї статті.")
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
