@@ -644,10 +644,10 @@ for ri, article in enumerate(articles_to_show, 2):
         write_block(1, "✅ TOP (економія)",      top_df,     "RdYlGn")
         write_block(4, "❌ ANTITOP (переліміт)", antitop_df, "RdYlGn_r")
 
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return output
+output = io.BytesIO()
+wb.save(output)
+output.seek(0)
+return output
 
 
 def main():
