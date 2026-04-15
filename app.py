@@ -165,7 +165,7 @@ def render_article_block(title, table_df, chart_title,
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
-    # Метрики
+    # Метрики (залишаються без змін)
     if df_filtered is not None and col_tt and col_article and col_value and col_plf and col_month:
         facts = [table_df.loc[m, "Fact"] for m in range(1, 13)]
         non_zero_facts = [f for f in facts if f != 0]
@@ -216,25 +216,40 @@ def render_article_block(title, table_df, chart_title,
     fig.update_layout(height=350, margin=dict(t=30, b=20, l=10, r=10), barmode="group", hovermode="x unified")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Клікабельний список магазинів
-    st.markdown("**🏪 Список магазинів у аналізі статті** (натисни для фільтру)")
+    # ==================== S L I C E R ====================
+    st.markdown("**🏪 Slicer — вибір магазинів**")
     if df_filtered is not None and col_tt and col_article:
         article_df = df_filtered[df_filtered[col_article] == title]
-        stores_list = sorted(article_df[col_tt].dropna().unique().tolist())
-        if stores_list:
-            with st.expander(f"Показати всі магазини ({len(stores_list)} шт.)", expanded=False):
-                num_cols = 4 if len(stores_list) > 12 else 3
-                cols = st.columns(num_cols)
-                for idx, store in enumerate(stores_list):
-                    with cols[idx % num_cols]:
-                        st.button(
-                            str(store),
-                            key=f"store_btn_{title}_{idx}",
-                            use_container_width=True,
-                            type="secondary",
-                            on_click=set_single_store,
-                            args=(store,)
-                        )
+        all_stores = sorted(article_df[col_tt].dropna().unique().tolist())
+
+        if all_stores:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                selected_stores = st.multiselect(
+                    label="Оберіть магазини (пошук працює)",
+                    options=all_stores,
+                    default=st.session_state.get(f"article_stores_{title}", all_stores[:10]),  # за замовчуванням перші 10
+                    key=f"store_slicer_{title}",
+                    placeholder="Пошук магазину..."
+                )
+            with col2:
+                st.write("")  # відступ
+                if st.button("✅ Всі", use_container_width=True, key=f"all_{title}"):
+                    st.session_state[f"article_stores_{title}"] = all_stores
+                    st.rerun()
+                if st.button("❌ Очистити", use_container_width=True, key=f"clear_{title}"):
+                    st.session_state[f"article_stores_{title}"] = []
+                    st.rerun()
+
+            # Зберігаємо вибір у session_state
+            st.session_state[f"article_stores_{title}"] = selected_stores
+
+            # Показуємо вибрані магазини як чіпи
+            if selected_stores:
+                st.write("**Вибрано:** " + ", ".join(selected_stores))
+            else:
+                st.warning("Жоден магазин не вибрано")
+
         else:
             st.info("Немає даних по магазинах для цієї статті.")
     else:
