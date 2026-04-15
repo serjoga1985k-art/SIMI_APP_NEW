@@ -857,7 +857,7 @@ def main():
         rows_pivot.append(row)
 
     pivot_df = pd.DataFrame(rows_pivot).set_index("Стаття")
-    cmap_p = "RdYlGn_r" if pivot_metric == "Delta (Average-Fact)" else "Blues"
+    cmap_p = "RdYlGn_r" if pivot_metric == "Delta (Fact-Plan)" else "Blues"
     st.dataframe(
         pivot_df.style
             .background_gradient(cmap=cmap_p, axis=None)
