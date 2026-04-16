@@ -376,7 +376,7 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-                                                # ── TT slicer з горизонтальною прокруткою (надійний варіант) ─────────────
+                                                    # ── TT slicer — без HTML, з горизонтальною прокруткою ───────────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
@@ -395,47 +395,33 @@ def render_article_block(title, table_df, chart_title,
 
                 st.markdown("**Оберіть магазин:**")
 
-                # CSS для горизонтальної прокрутки
-                st.markdown("""
-                <style>
-                .scroll-row {
-                    display: flex;
-                    overflow-x: auto;
-                    gap: 6px;
-                    padding: 10px 0;
-                    scrollbar-width: thin;
-                    scrollbar-color: #5b2d8e #e5e7eb;
-                }
-                .scroll-row::-webkit-scrollbar {
-                    height: 10px;
-                }
-                .scroll-row::-webkit-scrollbar-thumb {
-                    background: #5b2d8e;
-                    border-radius: 10px;
-                }
-                </style>
-                """, unsafe_allow_html=True)
+                # Кількість кнопок в одному видимому рядку
+                buttons_per_row = 14   # Зміни на 12 або 16 якщо потрібно
 
-                # Головний контейнер з прокруткою
-                scroll_container = st.container()
-                with scroll_container:
-                    # Робимо один довгий рядок
-                    cols = st.columns(len(available_tts))   # створюємо стільки колонок, скільки магазинів
-                    
-                    for idx, tt in enumerate(available_tts):
-                        with cols[idx]:
-                            if st.button(
-                                str(tt),
-                                key=f"tt_btn_{article_idx}_{idx}_{tt}",
-                                type="primary" if active_tt == tt else "secondary",
-                                use_container_width=True
-                            ):
-                                st.session_state[skey] = tt
-                                st.rerun()
+                # Створюємо горизонтальну прокрутку через контейнер
+                scroll_cont = st.container()
+                with scroll_cont:
+                    for i in range(0, len(available_tts), buttons_per_row):
+                        chunk = available_tts[i:i + buttons_per_row]
+                        
+                        # Додаємо горизонтальну прокрутку для кожного рядка
+                        row_container = st.container()
+                        with row_container:
+                            cols = st.columns(buttons_per_row)
+                            for j, tt in enumerate(chunk):
+                                with cols[j]:
+                                    if st.button(
+                                        str(tt),
+                                        key=f"tt_{article_idx}_{i}_{j}_{tt}",
+                                        type="primary" if active_tt == tt else "secondary",
+                                        use_container_width=True
+                                    ):
+                                        st.session_state[skey] = tt
+                                        st.rerun()
 
                 # Статус
                 if active_tt != "__ALL__":
-                    st.success(f"📍 Активний: **{active_tt}**")
+                    st.success(f"📍 Активний магазин: **{active_tt}**")
                 else:
                     st.caption(f"Всього магазинів: {len(available_tts)}")
 
