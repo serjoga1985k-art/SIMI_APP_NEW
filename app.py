@@ -164,51 +164,15 @@ def render_article_block(title, table_df, chart_title,
         display_df = table_df
 
     # ── Header ──────────────────────────────────────────────────
-    # Формуємо бейджі
-badges = ""
-
-if active_tt != "__ALL__":
-    badges += f'''
-    <span style="margin-left:8px;background:{PURPLE};color:white;
-                 font-size:0.75rem;padding:2px 10px;border-radius:10px;">
-        🏪 {active_tt}
-    </span>
-    '''
-
-if selected_format2 != "__ALL__":
-    badges += f'''
-    <span style="margin-left:6px;background:#1565c0;color:white;
-                 font-size:0.75rem;padding:2px 10px;border-radius:10px;">
-        📦 {selected_format2}
-    </span>
-    '''
-
-if selected_format_to != "__ALL__":
-    badges += f'''
-    <span style="margin-left:6px;background:#00897b;color:white;
-                 font-size:0.75rem;padding:2px 10px;border-radius:10px;">
-        🏬 {selected_format_to}
-    </span>
-    '''
-
-if selected_area != "__ALL__":
-    badges += f'''
-    <span style="margin-left:6px;background:#ef6c00;color:white;
-                 font-size:0.75rem;padding:2px 10px;border-radius:10px;">
-        📐 {selected_area}
-    </span>
-    '''
-
-# Header
-st.markdown(f"""
-<div style="margin-top:20px; margin-bottom:4px; display:flex; align-items:center; flex-wrap:wrap;">
-  <span style="background:{GREEN_HDR};color:white;font-weight:700;
-               padding:4px 14px;font-size:0.9rem;border-radius:2px;">
-    {title}
-  </span>
-  {badges}
-</div>
-""", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="margin-top:20px; margin-bottom:4px;">
+      <span style="background:{GREEN_HDR};color:white;font-weight:700;padding:4px 14px;
+                   font-size:0.9rem;border-radius:2px;">{title}</span>
+      {"" if active_tt == "__ALL__" else
+       f'<span style="margin-left:10px;background:{PURPLE};color:white;font-size:0.78rem;'
+       f'padding:2px 10px;border-radius:10px;">📍 {active_tt}</span>'}
+    </div>
+    """, unsafe_allow_html=True)
 
     # ── Data table ───────────────────────────────────────────────
     html = f"""
