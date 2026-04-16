@@ -672,7 +672,7 @@ def main():
     background-color: #5b2d8e !important;
     color: white !important;
     border: 2px solid #5b2d8e !important;
-    font-weight: 700 !important;
+    font-weight: 400 !important;
     font-size: 0.60rem !important;
     padding: 0.25rem 0.4rem !important;
     line-height: 1.1 !important;
