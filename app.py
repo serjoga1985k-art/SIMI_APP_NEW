@@ -255,13 +255,13 @@ def render_article_block(title, table_df, chart_title,
         best_block = f"""
           <div style="flex:1;min-width:220px;">
             <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                        letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
+                        letter-spacing:.04em;">✅ Найекономніші магазини (мін. Fact)</div>
             <div>{best_pills if best_pills else
                   '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
           </div>
           <div style="flex:1;min-width:220px;">
             <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                        letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div>
+                        letter-spacing:.04em;">❌ Найбільш витратні магазини (макс. Fact)</div>
             <div>{worst_pills if worst_pills else
                   '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
           </div>
