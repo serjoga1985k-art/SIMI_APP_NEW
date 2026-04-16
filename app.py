@@ -324,7 +324,7 @@ def render_article_block(title, table_df, chart_title,
             # Build options
             all_options = ["__ALL__"] + list(available_tts)
 
-            CHUNK = 8
+            CHUNK = 20
             chunks = [all_options[i:i + CHUNK] for i in range(0, len(all_options), CHUNK)]
 
             for chunk_idx, chunk in enumerate(chunks):
