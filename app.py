@@ -349,55 +349,7 @@ def render_article_block(title, table_df, chart_title,
                 st.caption(f"📍 Показано тільки: **{active_tt}**")
             else:
                 st.caption("Показано всі ТТ")
-        available_tts = sorted(
-            df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(),
-            key=str
-        )
-
-        if available_tts:
-            st.markdown(f"""
-            <div style="margin:6px 0 4px 0;font-size:0.72rem;color:#888;
-                        text-transform:uppercase;letter-spacing:.06em;font-weight:600;">
-              🏪 Слайсер по ТТ — клікни для деталізації
-            </div>
-            """, unsafe_allow_html=True)
-
-            # CSS for slicer buttons — injected once per article block
-            st.markdown(f"""
-            <style>
-            div[data-testid="stHorizontalBlock"] .slicer-wrap {{
-                display: flex; flex-wrap: wrap; gap: 4px;
-            }}
-            </style>
-            """, unsafe_allow_html=True)
-
-            # Build rows of buttons: "Всі" + each TT
-            all_options = ["__ALL__"] + list(available_tts)
-            # Render in chunks of ~8 per row for readability
-            CHUNK = 8
-            chunks = [all_options[i:i + CHUNK] for i in range(0, len(all_options), CHUNK)]
-
-            for chunk_idx, chunk in enumerate(chunks):
-                cols = st.columns(len(chunk))
-                for ci, tt_opt in enumerate(chunk):
-                    label     = "🔁 Всі" if tt_opt == "__ALL__" else str(tt_opt)
-                    is_active = (active_tt == tt_opt)
-                    btn_type  = "primary" if is_active else "secondary"
-                    with cols[ci]:
-                        if st.button(
-                            label,
-                            key=f"slicer_{article_idx}_{chunk_idx}_{ci}_{tt_opt}",
-                            type=btn_type,
-                            use_container_width=True,
-                        ):
-                            st.session_state[skey] = tt_opt
-                            st.rerun()
-
-            # Hint text
-            if active_tt != "__ALL__":
-                st.caption(f"📍 Показано дані тільки для: **{active_tt}** — натисни «🔁 Всі» щоб скинути")
-            else:
-                st.caption("Показано агреговані дані по всіх обраних ТТ")
+        
 
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
