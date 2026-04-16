@@ -589,8 +589,8 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         # ── 4. TOP / ANTITOP ─────────────────────────────────────
         ws_top     = wb.create_sheet("TOP_ANTITOP")
         sum_val2   = tt_table2.groupby(col_tt)[vc].sum().reset_index()
-        top_df     = sum_val2.sort_values(vc, ascending=True).head(400)
-        antitop_df = sum_val2.sort_values(vc, ascending=False).head(400)
+        top_df     = sum_val2.sort_values(vc, ascending=True).head(50)
+        antitop_df = sum_val2.sort_values(vc, ascending=False).head(50)
 
         def write_block(start_col, title_text, df_block, cmap_name):
             tc = ws_top.cell(row=1, column=start_col, value=title_text)
@@ -644,158 +644,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     wb.save(output)
     output.seek(0)
     return output
-def export_plan_fact_only(df, df_filtered, col_tt, col_article, col_month, col_value,
-                          col_plf, articles_to_show, tt_val, group_factors, metric_col):
-    """Експорт ТІЛЬКИ план-фактного аналізу (зведена + листи по статтях з графіками)"""
-    import openpyxl
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
-    from openpyxl.drawing.image import Image as XLImage
 
-    NUM_FMT = '# ##0;-# ##0;-'
-
-    def hdr_fill(h):
-        h = h.lstrip("#")
-        return PatternFill("solid", start_color=h, end_color=h)
-
-    def thin_border():
-        s = Side(style="thin", color="AAAAAA")
-        return Border(left=s, right=s, top=s, bottom=s)
-
-    def scw(ws, ci, w):
-        ws.column_dimensions[get_column_letter(ci)].width = w
-
-    month_labels_list = [MONTH_LABELS[m] for m in range(1, 13)]
-    wb = Workbook()
-    wb.remove(wb.active)
-
-    # ── 1. Зведена таблиця ──────────────────────────────────────
-    ws_p = wb.create_sheet("Зведена_таблиця")
-    ws_p.freeze_panes = "B2"
-    header = ["Стаття"] + month_labels_list + ["РАЗОМ"]
-    for ci, h in enumerate(header, 1):
-        c = ws_p.cell(row=1, column=ci, value=h)
-        c.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
-        c.fill = hdr_fill("2e7d32")
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = thin_border()
-    ws_p.row_dimensions[1].height = 28
-    ws_p.column_dimensions["A"].width = 40
-    for ci in range(2, len(header) + 1):
-        scw(ws_p, ci, 12)
-
-    for ri, article in enumerate(articles_to_show, 2):
-        tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                    col_month, col_value, col_plf, article, tt_val, group_factors)
-        vals = [article] + [tdf.loc[m, metric_col] for m in range(1, 13)]
-        vals.append(sum(tdf.loc[m, metric_col] for m in range(1, 13)))
-        for ci, v in enumerate(vals, 1):
-            c = ws_p.cell(row=ri, column=ci, value=v)
-            c.border = thin_border()
-            c.font = Font(name="Arial", size=9)
-            if ci == 1:
-                c.alignment = Alignment(horizontal="left")
-            else:
-                c.number_format = NUM_FMT
-                c.alignment = Alignment(horizontal="right")
-                if isinstance(v, (int, float)) and v < 0:
-                    c.font = Font(name="Arial", size=9, color="C0392B")
-
-    # ── 2. Листи по кожній статті з таблицею + графіком ────────
-    row_labels = ["План", "Факт", "Average", "Дельта"]
-    row_keys   = ["Plan", "Fact", "Average", "Delta"]
-    row_fills  = ["FFFFFF", "e8d5f5", "fde8e8", "fff9e0"]
-    row_colors = ["333333", "5b2d8e", "c0392b", "b8860b"]
-
-    for article in articles_to_show:
-        tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                    col_month, col_value, col_plf, article, tt_val, group_factors)
-        
-        safe_name = str(article)[:30].replace("/", "_").replace("\\", "_").replace(":", "_") \
-                    .replace("*", "_").replace("?", "_").replace("[", "_").replace("]", "_") \
-                    .replace("|", "_").replace(" ", "_")
-        
-        ws = wb.create_sheet(safe_name)
-        ws.freeze_panes = "B3"
-
-        # Заголовок статті
-        ws.merge_cells(1, 1, 1, 15)
-        tc = ws.cell(1, 1, value=article)
-        tc.font = Font(bold=True, color="FFFFFF", size=13)
-        tc.fill = hdr_fill("5b2d8e")
-        tc.alignment = Alignment(horizontal="left", vertical="center")
-
-        # Заголовки таблиці
-        headers = ["Показник"] + month_labels_list + ["РАЗОМ"]
-        for ci, h in enumerate(headers, 1):
-            c = ws.cell(2, ci, value=h)
-            c.font = Font(bold=True, color="FFFFFF", size=9)
-            c.fill = hdr_fill("2e7d32")
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.border = thin_border()
-
-        # Дані
-        for ri, (label, key, fill_hex, color_hex) in enumerate(zip(row_labels, row_keys, row_fills, row_colors), 3):
-            vals = [tdf.loc[m, key] for m in range(1, 13)]
-            total = sum(vals)
-            # Показник
-            nc = ws.cell(ri, 1, value=label)
-            nc.font = Font(bold=True, color=color_hex, size=9)
-            nc.fill = hdr_fill(fill_hex)
-            nc.border = thin_border()
-            nc.alignment = Alignment(horizontal="left")
-            # Місяці
-            for ci, v in enumerate(vals, 2):
-                c = ws.cell(ri, ci, value=v)
-                c.number_format = NUM_FMT
-                c.fill = hdr_fill(fill_hex)
-                c.border = thin_border()
-                c.alignment = Alignment(horizontal="right")
-                c.font = Font(size=9, color="C0392B" if v < 0 else color_hex)
-            # Разом
-            tc2 = ws.cell(ri, 14, value=total)
-            tc2.number_format = NUM_FMT
-            tc2.fill = hdr_fill(fill_hex)
-            tc2.border = thin_border()
-            tc2.alignment = Alignment(horizontal="right")
-            tc2.font = Font(bold=True, size=9, color="C0392B" if total < 0 else color_hex)
-
-        ws.column_dimensions["A"].width = 14
-        for ci in range(2, 15):
-            scw(ws, ci, 12)
-
-        # Графік
-        x = month_labels_list
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=x, y=[tdf.loc[m, "Plan"] for m in range(1,13)], name="План", marker_color=GREY))
-        fig.add_trace(go.Bar(x=x, y=[tdf.loc[m, "Fact"] for m in range(1,13)], name="Факт", marker_color=PURPLE))
-        fig.add_trace(go.Scatter(x=x, y=[tdf.loc[m, "Average"] for m in range(1,13)], 
-                                name="Average", line=dict(color=RED_LINE, width=3), mode="lines+markers"))
-        fig.add_trace(go.Scatter(x=x, y=[tdf.loc[m, "Delta"] for m in range(1,13)], 
-                                name="Дельта", line=dict(color=YELLOW, dash="dot"), mode="lines+markers"))
-
-        fig.update_layout(
-            title=f"План-Факт аналіз — {article}",
-            height=340, barmode="group",
-            legend=dict(x=1.05, y=1),
-            margin=dict(t=50, b=30, l=50, r=120)
-        )
-
-        try:
-            import plotly.io as pio
-            img_bytes = pio.to_image(fig, format="png", scale=1.8)
-            img_stream = io.BytesIO(img_bytes)
-            img_obj = XLImage(img_stream)
-            img_obj.anchor = "A8"
-            ws.add_image(img_obj)
-        except:
-            pass
-
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return output
 
 def main():
     st.set_page_config(page_title="СІМІ Dashboard", layout="wide")
