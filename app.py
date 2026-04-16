@@ -936,7 +936,11 @@ div[data-testid="stButton"] > button:hover {
     st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
     st.subheader("📋 Зведена таблиця")
     pivot_metric = st.radio("Метрика", ["Fact", "Plan", "Delta (Average-Fact)"], horizontal=True)
-    col_map_d    = {"Fact": "Fact", "Plan": "Plan", "Delta (Average-Fact)": "Delta"}
+    col_map_d = {
+    "Fact": "Fact",
+    "Plan": "Plan",
+    "Delta (Average-Fact)": "Delta"
+}
     metric_col   = col_map_d[pivot_metric]
 
     rows_pivot = []
