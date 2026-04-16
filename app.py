@@ -308,9 +308,6 @@ def render_article_block(title, table_df, chart_title,
     )
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-collapse_key = f"slicer_collapsed_{article_idx}"
-if collapse_key not in st.session_state:
-    st.session_state[collapse_key] = False  # False = відкритий
     # ═══════════════════════════════════════════════════════════════
     # TT SLICER — buttons below the chart
     # ═══════════════════════════════════════════════════════════════
@@ -682,15 +679,7 @@ def main():
     .block-sep { border-top:2px solid #5b2d8e; margin:16px 0 10px 0; }
 
     /* Slicer button tweaks */
-    div[data-testid="stHorizontalBlock"] button {
-    margin: 0 !important;
-}
-    div[data-testid="stButton"] > button[kind="primary"],
-div[data-testid="stButton"] > button[kind="secondary"] {
-    padding: 2px 6px !important;      /* ⬅️ менше відступів */
-    font-size: 0.65rem !important;    /* ⬅️ менший текст */
-    border-radius: 6px !important;    /* ⬅️ компактніше */
-    min-height: 26px !important;      /* ⬅️ висота */
+    div[data-testid="stButton"] > button[kind="primary"] {
         background-color: #5b2d8e !important;
         color: white !important;
         border: 2px solid #5b2d8e !important;
