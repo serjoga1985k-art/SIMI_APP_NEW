@@ -313,7 +313,7 @@ def render_article_block(title, table_df, chart_title,
     # TT SLICER — collapsible
     # ═══════════════════════════════════════════════════════════════
     if df_filtered is not None and col_tt is not None:
-    available_tts = sorted(
+        available_tts = sorted(
         df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(),
         key=str
     )
