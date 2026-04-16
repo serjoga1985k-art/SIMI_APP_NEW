@@ -376,7 +376,7 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-                # ── TT slicer (блоки по 3×10 кнопок з прокруткою) ───────────────────────
+                    # ── TT slicer (горизонтальна прокрутка як на картинці) ───────────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
@@ -386,8 +386,8 @@ def render_article_block(title, table_df, chart_title,
         if available_tts:
             with st.expander("🏪 Слайсер по ТТ — деталізація по магазину", expanded=False):
                 
-                # Кнопка "Всі магазини"
-                if st.button("🔁 **ВСІ МАГАЗИНИ**", 
+                # Кнопка "Всі"
+                if st.button("🔁 ВСІ МАГАЗИНИ", 
                             type="primary" if active_tt == "__ALL__" else "secondary",
                             use_container_width=True,
                             key=f"all_tt_{article_idx}"):
@@ -396,42 +396,45 @@ def render_article_block(title, table_df, chart_title,
 
                 st.markdown("**Оберіть магазин:**")
 
-                # Розбиваємо на блоки по 30 штук (3 рядки × 10)
-                batch_size = 30
-                for batch_idx in range(0, len(available_tts), batch_size):
-                    batch = available_tts[batch_idx : batch_idx + batch_size]
+                # Горизонтально прокручувана область
+                html = f"""
+                <div style="overflow-x:auto; padding:8px 0; border:1px solid #ddd; border-radius:8px; background:#fafafa;">
+                    <div style="display:flex; flex-wrap:wrap; gap:6px; padding:8px; min-width:max-content;">
+                """
+                
+                for tt in available_tts:
+                    is_active = active_tt == tt
+                    color = "#5b2d8e" if is_active else "#2e7d32"
+                    bg    = "#e8d5f5" if is_active else "#e8f5e9"
                     
-                    if len(available_tts) > batch_size:
-                        start = batch_idx + 1
-                        end = min(batch_idx + batch_size, len(available_tts))
-                        st.markdown(f"**{start} — {end}**")
-                    
-                    # 3 рядки по 10 кнопок
-                    for row in range(3):
-                        chunk = batch[row*10 : (row+1)*10]
-                        if not chunk:
-                            break
-                        cols = st.columns(10)
-                        for i, tt in enumerate(chunk):
-                            with cols[i]:
-                                if st.button(
-                                    str(tt),
-                                    key=f"tt_btn_{article_idx}_{batch_idx}_{row}_{i}",
-                                    type="primary" if active_tt == tt else "secondary",
-                                    use_container_width=True
-                                ):
-                                    st.session_state[skey] = tt
-                                    st.rerun()
-                    
-                    # Невеликий роздільник між блоками
-                    if batch_idx + batch_size < len(available_tts):
-                        st.markdown("---")
+                    html += f"""
+                        <button onclick="window.location.href='?tt={tt}&article_idx={article_idx}'"
+                                style="background:{bg}; color:{color}; border:none; padding:6px 12px; 
+                                       border-radius:6px; font-size:0.85rem; font-weight:600; 
+                                       white-space:nowrap; cursor:pointer; min-width:70px;
+                                       border:2px solid {color if is_active else 'transparent'};">
+                            {tt}
+                        </button>
+                    """
+                
+                html += "</div></div>"
 
-                # Інформація внизу
+                # Відображаємо HTML + JS для обробки кліків (бо st.button в циклі не зручно з великою кількістю)
+                st.markdown(html, unsafe_allow_html=True)
+
+                # Обробка кліку через query params (хак для Streamlit)
+                if "tt" in st.query_params and st.query_params["article_idx"] == str(article_idx):
+                    new_tt = st.query_params["tt"]
+                    if new_tt in available_tts or new_tt == "__ALL__":
+                        st.session_state[skey] = new_tt
+                        st.query_params.clear()  # очищаємо
+                        st.rerun()
+
+                # Поточний статус
                 if active_tt != "__ALL__":
-                    st.success(f"📍 Активний магазин: **{active_tt}**")
+                    st.success(f"📍 Активний: **{active_tt}**")
                 else:
-                    st.caption(f"Показано всі ТТ — {len(available_tts)} магазинів")
+                    st.caption(f"Показано всі ТТ ({len(available_tts)})")
 
 
 # ── Excel export ──────────────────────────────────────────────────────────────
