@@ -376,7 +376,7 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-                                        # ── TT slicer з горизонтальною прокруткою (стабільний варіант) ───────────
+                                            # ── TT slicer з видимою горизонтальною прокруткою ───────────────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
@@ -396,53 +396,78 @@ def render_article_block(title, table_df, chart_title,
 
                 st.markdown("**Оберіть магазин:**")
 
-                # CSS для горизонтальної прокрутки
+                # CSS для красивого скролбару
                 st.markdown("""
                 <style>
-                .tt-horizontal-scroll {
-                    display: flex;
+                .tt-scroll-wrapper {
                     overflow-x: auto;
-                    padding: 10px 5px;
-                    gap: 8px;
+                    padding: 12px 8px;
+                    background: #f8f9fa;
                     border: 1px solid #e0e0e0;
-                    border-radius: 8px;
-                    background-color: #f8f9fa;
+                    border-radius: 10px;
+                    white-space: nowrap;
                     scrollbar-width: thin;
-                    scrollbar-color: #5b2d8e #e0e0e0;
+                    scrollbar-color: #5b2d8e #d1d5db;
                 }
-                .tt-horizontal-scroll::-webkit-scrollbar {
-                    height: 8px;
+                .tt-scroll-wrapper::-webkit-scrollbar {
+                    height: 10px;
                 }
-                .tt-horizontal-scroll::-webkit-scrollbar-thumb {
+                .tt-scroll-wrapper::-webkit-scrollbar-track {
+                    background: #f1f1f1;
+                    border-radius: 10px;
+                }
+                .tt-scroll-wrapper::-webkit-scrollbar-thumb {
                     background: #5b2d8e;
                     border-radius: 10px;
+                }
+                .tt-chip {
+                    display: inline-block;
+                    padding: 9px 16px;
+                    margin: 4px 3px;
+                    border-radius: 20px;
+                    font-size: 0.86rem;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: all 0.2s ease;
+                    min-width: 68px;
+                    text-align: center;
                 }
                 </style>
                 """, unsafe_allow_html=True)
 
-                # Створюємо рядки по 15-18 кнопок
-                buttons_per_row = 16   # Зміни на 12 або 20 якщо потрібно
+                # HTML з горизонтальною прокруткою
+                html = '<div class="tt-scroll-wrapper">'
+                for tt in available_tts:
+                    if active_tt == tt:
+                        html += f'''
+                        <span class="tt-chip" style="background:#5b2d8e; color:white; border:2px solid #4a2578;"
+                              onclick="window.parent.postMessage({{'tt_select': '{tt}', 'idx': {article_idx}}}, '*')">
+                            {tt}
+                        </span>
+                        '''
+                    else:
+                        html += f'''
+                        <span class="tt-chip" style="background:#f0fdf4; color:#166534; border:2px solid #86efac;"
+                              onclick="window.parent.postMessage({{'tt_select': '{tt}', 'idx': {article_idx}}}, '*')">
+                            {tt}
+                        </span>
+                        '''
+                html += '</div>'
                 
-                scroll_container = st.container()
-                with scroll_container:
-                    for start in range(0, len(available_tts), buttons_per_row):
-                        chunk = available_tts[start:start + buttons_per_row]
-                        cols = st.columns(len(chunk))
-                        
-                        for col, tt in zip(cols, chunk):
-                            with col:
-                                if st.button(
-                                    str(tt),
-                                    key=f"tt_{article_idx}_{tt}_{start}",
-                                    type="primary" if active_tt == tt else "secondary",
-                                    use_container_width=True
-                                ):
-                                    st.session_state[skey] = tt
-                                    st.rerun()
+                st.markdown(html, unsafe_allow_html=True)
+
+                # Обробка вибору (postMessage)
+                if st.query_params.get("tt_select"):
+                    selected = st.query_params.get("tt_select")
+                    idx = st.query_params.get("idx")
+                    if idx and int(idx) == article_idx and selected in available_tts:
+                        st.session_state[skey] = selected
+                        st.query_params.clear()
+                        st.rerun()
 
                 # Статус
                 if active_tt != "__ALL__":
-                    st.success(f"📍 Активний: **{active_tt}**")
+                    st.success(f"📍 Активний магазин: **{active_tt}**")
                 else:
                     st.caption(f"Всього магазинів: {len(available_tts)}")
 
