@@ -712,17 +712,17 @@ def main():
         with c4:
             col_level0  = st.selectbox("Level_0",        cols)
 
-    with st.expander("🏪 Налаштування інформації про ТТ", expanded=False):
+    with st.expander("🏪 Колонки шапки магазину", expanded=False):
         sh1, sh2, sh3 = st.columns(3)
         with sh1:
-            col_city = st.selectbox("Місто", cols)
-            col_area = st.selectbox("Формат Площа", cols)
+            col_city   = st.selectbox("Місто",          ["—"] + cols)
+            col_area   = st.selectbox("Площа",          ["—"] + cols)
         with sh2:
-            col_fmt_to = st.selectbox("Формат ТО", cols)
-            col_segment = st.selectbox("Мегасегмент (Формат 2)", cols)
+            col_format = st.selectbox("Формат ТО",     ["—"] + cols)
+            col_mega   = st.selectbox("Мегасегмент",   ["—"] + cols)
         with sh3:
-            col_open_year = st.selectbox("Рік відкриття", cols)
-            col_unit = st.selectbox("Назва підрозділу", cols)
+            col_rik    = st.selectbox("Рік",            ["—"] + cols)
+            col_mis    = st.selectbox("Місяць (шапка)", ["—"] + cols)
 
     # ── Sidebar filters ──────────────────────────────────────────
     st.sidebar.markdown("## 🔍 Фільтри")
