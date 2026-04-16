@@ -679,6 +679,9 @@ def main():
     .block-sep { border-top:2px solid #5b2d8e; margin:16px 0 10px 0; }
 
     /* Slicer button tweaks */
+    div[data-testid="stHorizontalBlock"] button {
+    margin: 0 !important;
+}
     div[data-testid="stButton"] > button[kind="primary"],
 div[data-testid="stButton"] > button[kind="secondary"] {
     padding: 2px 6px !important;      /* ⬅️ менше відступів */
