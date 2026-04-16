@@ -376,7 +376,7 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-            # ── TT slicer (3 рядки по 10 кнопок + прокрутка) ───────────────────────
+                # ── TT slicer (блоки по 3×10 кнопок з прокруткою) ───────────────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
@@ -385,9 +385,8 @@ def render_article_block(title, table_df, chart_title,
         
         if available_tts:
             with st.expander("🏪 Слайсер по ТТ — деталізація по магазину", expanded=False):
-                st.caption("Натисни на магазин для детального перегляду")
-
-                # "Всі" кнопка
+                
+                # Кнопка "Всі магазини"
                 if st.button("🔁 **ВСІ МАГАЗИНИ**", 
                             type="primary" if active_tt == "__ALL__" else "secondary",
                             use_container_width=True,
@@ -395,47 +394,44 @@ def render_article_block(title, table_df, chart_title,
                     st.session_state[skey] = "__ALL__"
                     st.rerun()
 
-                st.markdown("**Або обери конкретний магазин:**")
+                st.markdown("**Оберіть магазин:**")
 
-                # 3 рядки по 10 кнопок
-                n = len(available_tts)
-                cols_per_row = 10
-                rows = 3
-                
-                for row in range(rows):
-                    chunk = available_tts[row*cols_per_row : (row+1)*cols_per_row]
-                    if not chunk:
-                        break
-                    cols = st.columns(cols_per_row)
-                    for i, tt in enumerate(chunk):
-                        with cols[i]:
-                            if st.button(
-                                str(tt), 
-                                key=f"tt_btn_{article_idx}_{row}_{i}",
-                                type="primary" if active_tt == tt else "secondary",
-                                use_container_width=True
-                            ):
-                                st.session_state[skey] = tt
-                                st.rerun()
-
-                # Якщо більше 30 магазинів — додаємо прокрутку через selectbox
-                if n > 30:
-                    st.markdown("---")
-                    remaining = available_tts[rows*cols_per_row:]
-                    selected = st.selectbox(
-                        f"Інші магазини ({len(remaining)})...",
-                        options=remaining,
-                        key=f"scroll_select_{article_idx}"
-                    )
-                    if st.button("✅ Вибрати цей магазин", type="primary", key=f"select_extra_{article_idx}"):
-                        st.session_state[skey] = selected
-                        st.rerun()
+                # Розбиваємо на блоки по 30 штук (3 рядки × 10)
+                batch_size = 30
+                for batch_idx in range(0, len(available_tts), batch_size):
+                    batch = available_tts[batch_idx : batch_idx + batch_size]
+                    
+                    if len(available_tts) > batch_size:
+                        start = batch_idx + 1
+                        end = min(batch_idx + batch_size, len(available_tts))
+                        st.markdown(f"**{start} — {end}**")
+                    
+                    # 3 рядки по 10 кнопок
+                    for row in range(3):
+                        chunk = batch[row*10 : (row+1)*10]
+                        if not chunk:
+                            break
+                        cols = st.columns(10)
+                        for i, tt in enumerate(chunk):
+                            with cols[i]:
+                                if st.button(
+                                    str(tt),
+                                    key=f"tt_btn_{article_idx}_{batch_idx}_{row}_{i}",
+                                    type="primary" if active_tt == tt else "secondary",
+                                    use_container_width=True
+                                ):
+                                    st.session_state[skey] = tt
+                                    st.rerun()
+                    
+                    # Невеликий роздільник між блоками
+                    if batch_idx + batch_size < len(available_tts):
+                        st.markdown("---")
 
                 # Інформація внизу
                 if active_tt != "__ALL__":
                     st.success(f"📍 Активний магазин: **{active_tt}**")
                 else:
-                    st.caption(f"Показано всі ТТ ({n} магазинів)")
+                    st.caption(f"Показано всі ТТ — {len(available_tts)} магазинів")
 
 
 # ── Excel export ──────────────────────────────────────────────────────────────
