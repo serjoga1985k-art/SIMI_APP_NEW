@@ -286,7 +286,7 @@ def _render_metrics_panel(display_df, df_filtered, col_tt, col_article,
             best_pills  = make_pills(tt_totals.head(n),          "#1b5e20", "#e8f5e9")
             worst_pills = make_pills(tt_totals.tail(n).iloc[::-1], "#7f0000", "#ffebee")
 
-        best_block = ""
+            best_block = ""
         if active_tt == "__ALL__":
         no_data = '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'
         best_block = f"""
