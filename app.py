@@ -409,6 +409,51 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 c.alignment = Alignment(horizontal="right")
                 if isinstance(v, (int, float)) and v < 0:
                     c.font = Font(name="Arial", size=9, color="C0392B")
+    # ── 1.1 Зведена таблиця по ТТ ───────────────────────────────
+ws_tt = wb.create_sheet("Зведена_ТТ")
+ws_tt.freeze_panes = "B2"
+
+header_tt = ["ТТ", "Fact", "Plan", "Delta", "%"]
+for ci, h in enumerate(header_tt, 1):
+    c = ws_tt.cell(row=1, column=ci, value=h)
+    c.font = Font(bold=True, color="FFFFFF")
+    c.fill = hdr_fill("5b2d8e")
+    c.alignment = Alignment(horizontal="center")
+    c.border = thin_border()
+
+# підготовка даних
+df_num_tt = df_filtered.copy()
+df_num_tt[col_value] = pd.to_numeric(df_num_tt[col_value], errors="coerce")
+df_num_tt["_m"] = get_month_num(df_num_tt[col_month])
+
+rows_tt = []
+
+for tt in sorted(df_filtered[col_tt].dropna().unique(), key=str):
+    sub = df_num_tt[df_num_tt[col_tt] == tt]
+
+    plan = sub[sub[col_plf] == "PL"][col_value].sum()
+    fact = sub[sub[col_plf] == "F"][col_value].sum()
+    delta = fact - plan
+    pct = (fact / plan - 1) * 100 if plan != 0 else None
+
+    rows_tt.append([tt, fact, plan, delta, pct])
+
+# запис у Excel
+for ri, row in enumerate(rows_tt, 2):
+    for ci, v in enumerate(row, 1):
+        c = ws_tt.cell(row=ri, column=ci, value=v)
+        c.border = thin_border()
+
+        if ci == 1:
+            c.alignment = Alignment(horizontal="left")
+        else:
+            if v is not None:
+                if ci == 5:  # %
+                    c.number_format = '0.0%'
+                    c.value = v / 100
+                else:
+                    c.number_format = NUM_FMT
+            c.alignment = Alignment(horizontal="right")                
 
     # ── 2. Листи по статтях з графіками ─────────────────────────
     row_labels = ["План", "Факт", "Average", "Дельта"]
