@@ -376,7 +376,7 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-                    # ── TT slicer (горизонтальна прокрутка як на картинці) ───────────────────
+                        # ── TT slicer (сучасний вигляд з горизонтальною прокруткою) ─────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
@@ -386,55 +386,63 @@ def render_article_block(title, table_df, chart_title,
         if available_tts:
             with st.expander("🏪 Слайсер по ТТ — деталізація по магазину", expanded=False):
                 
-                # Кнопка "Всі"
+                # Кнопка "ВСІ МАГАЗИНИ"
                 if st.button("🔁 ВСІ МАГАЗИНИ", 
                             type="primary" if active_tt == "__ALL__" else "secondary",
                             use_container_width=True,
-                            key=f"all_tt_{article_idx}"):
+                            key=f"all_tt_btn_{article_idx}"):
                     st.session_state[skey] = "__ALL__"
                     st.rerun()
 
                 st.markdown("**Оберіть магазин:**")
 
-                # Горизонтально прокручувана область
-                html = f"""
-                <div style="overflow-x:auto; padding:8px 0; border:1px solid #ddd; border-radius:8px; background:#fafafa;">
-                    <div style="display:flex; flex-wrap:wrap; gap:6px; padding:8px; min-width:max-content;">
-                """
-                
-                for tt in available_tts:
-                    is_active = active_tt == tt
-                    color = "#5b2d8e" if is_active else "#2e7d32"
-                    bg    = "#e8d5f5" if is_active else "#e8f5e9"
-                    
-                    html += f"""
-                        <button onclick="window.location.href='?tt={tt}&article_idx={article_idx}'"
-                                style="background:{bg}; color:{color}; border:none; padding:6px 12px; 
-                                       border-radius:6px; font-size:0.85rem; font-weight:600; 
-                                       white-space:nowrap; cursor:pointer; min-width:70px;
-                                       border:2px solid {color if is_active else 'transparent'};">
-                            {tt}
-                        </button>
-                    """
-                
-                html += "</div></div>"
+                # Контейнер з горизонтальною прокруткою
+                scroll_container = st.container()
+                with scroll_container:
+                    # CSS для красивого вигляду
+                    st.markdown("""
+                    <style>
+                    .tt-button-row {
+                        display: flex;
+                        flex-wrap: nowrap;
+                        overflow-x: auto;
+                        gap: 6px;
+                        padding: 10px 0;
+                        scrollbar-width: thin;
+                    }
+                    .tt-button-row button {
+                        min-width: 78px;
+                        white-space: nowrap;
+                        border-radius: 6px;
+                        font-size: 0.84rem;
+                        font-weight: 600;
+                        padding: 6px 10px;
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
 
-                # Відображаємо HTML + JS для обробки кліків (бо st.button в циклі не зручно з великою кількістю)
-                st.markdown(html, unsafe_allow_html=True)
+                    # Розбиваємо на рядки (по 15-20 кнопок у рядку для зручності)
+                    buttons_per_row = 15
+                    for i in range(0, len(available_tts), buttons_per_row):
+                        chunk = available_tts[i:i + buttons_per_row]
+                        cols = st.columns(len(chunk))
+                        
+                        for col, tt in zip(cols, chunk):
+                            with col:
+                                if st.button(
+                                    str(tt),
+                                    key=f"tt_{article_idx}_{tt}",
+                                    type="primary" if active_tt == tt else "secondary",
+                                    use_container_width=True
+                                ):
+                                    st.session_state[skey] = tt
+                                    st.rerun()
 
-                # Обробка кліку через query params (хак для Streamlit)
-                if "tt" in st.query_params and st.query_params["article_idx"] == str(article_idx):
-                    new_tt = st.query_params["tt"]
-                    if new_tt in available_tts or new_tt == "__ALL__":
-                        st.session_state[skey] = new_tt
-                        st.query_params.clear()  # очищаємо
-                        st.rerun()
-
-                # Поточний статус
+                # Статус
                 if active_tt != "__ALL__":
-                    st.success(f"📍 Активний: **{active_tt}**")
+                    st.success(f"📍 Активний магазин: **{active_tt}**")
                 else:
-                    st.caption(f"Показано всі ТТ ({len(available_tts)})")
+                    st.caption(f"Показано всі ТТ ({len(available_tts)} магазинів)")
 
 
 # ── Excel export ──────────────────────────────────────────────────────────────
