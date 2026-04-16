@@ -1170,7 +1170,7 @@ def main():
         st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
         st.subheader("🏆 TOP / ANTITOP магазинів")
         sum_val = tt_table.groupby(col_tt)[val_col].sum().reset_index()
-        n_tt    = st.slider("Кількість магазинів", 1, 100, 10)
+        n_tt    = st.slider("Кількість магазинів", 1, 500, 10)
         top     = sum_val.sort_values(val_col, ascending=True).head(n_tt)
         antitop = sum_val.sort_values(val_col, ascending=False).head(n_tt)
         ca, cb  = st.columns(2)
