@@ -290,7 +290,7 @@ def _render_metrics_panel(display_df, df_filtered, col_tt, col_article,
         if active_tt == "__ALL__":
         no_data = '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'
         best_block = f"""
-          <div style="flex:1;min-width:220px;">
+        <div style="flex:1;min-width:220px;">
             <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
                         letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
             <div>{best_pills or no_data}</div>
