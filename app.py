@@ -589,8 +589,8 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         # ── 4. TOP / ANTITOP ─────────────────────────────────────
         ws_top     = wb.create_sheet("TOP_ANTITOP")
         sum_val2   = tt_table2.groupby(col_tt)[vc].sum().reset_index()
-        top_df     = sum_val2.sort_values(vc, ascending=True).head(50)
-        antitop_df = sum_val2.sort_values(vc, ascending=False).head(50)
+        top_df     = sum_val2.sort_values(vc, ascending=True).head(400)
+        antitop_df = sum_val2.sort_values(vc, ascending=False).head(400)
 
         def write_block(start_col, title_text, df_block, cmap_name):
             tc = ws_top.cell(row=1, column=start_col, value=title_text)
