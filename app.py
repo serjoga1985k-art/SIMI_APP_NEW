@@ -682,7 +682,7 @@ div[data-testid="stButton"] > button[kind="secondary"] {
     background-color: #f4f0fa !important;
     color: #5b2d8e !important;
     border: 1px solid #c9b6e8 !important;
-    font-size: 0.35rem !important;
+    font-size: 0.60rem !important;
     padding: 0.25rem 0.4rem !important;
     line-height: 1.1 !important;
 }
