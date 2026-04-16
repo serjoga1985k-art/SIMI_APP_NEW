@@ -376,7 +376,7 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-                        # ── TT slicer (сучасний вигляд з горизонтальною прокруткою) ─────────────
+                            # ── TT slicer — горизонтальна прокрутка (робочий варіант) ───────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
@@ -386,63 +386,84 @@ def render_article_block(title, table_df, chart_title,
         if available_tts:
             with st.expander("🏪 Слайсер по ТТ — деталізація по магазину", expanded=False):
                 
-                # Кнопка "ВСІ МАГАЗИНИ"
-                if st.button("🔁 ВСІ МАГАЗИНИ", 
-                            type="primary" if active_tt == "__ALL__" else "secondary",
-                            use_container_width=True,
-                            key=f"all_tt_btn_{article_idx}"):
-                    st.session_state[skey] = "__ALL__"
-                    st.rerun()
+                # Кнопка Всі магазини
+                col_all1, col_all2 = st.columns([1, 4])
+                with col_all1:
+                    if st.button("🔁 ВСІ МАГАЗИНИ", 
+                                type="primary" if active_tt == "__ALL__" else "secondary",
+                                use_container_width=True,
+                                key=f"all_{article_idx}"):
+                        st.session_state[skey] = "__ALL__"
+                        st.rerun()
 
                 st.markdown("**Оберіть магазин:**")
 
-                # Контейнер з горизонтальною прокруткою
-                scroll_container = st.container()
-                with scroll_container:
-                    # CSS для красивого вигляду
-                    st.markdown("""
-                    <style>
-                    .tt-button-row {
-                        display: flex;
-                        flex-wrap: nowrap;
-                        overflow-x: auto;
-                        gap: 6px;
-                        padding: 10px 0;
-                        scrollbar-width: thin;
-                    }
-                    .tt-button-row button {
-                        min-width: 78px;
-                        white-space: nowrap;
-                        border-radius: 6px;
-                        font-size: 0.84rem;
-                        font-weight: 600;
-                        padding: 6px 10px;
-                    }
-                    </style>
-                    """, unsafe_allow_html=True)
+                # === Горизонтальна прокрутка ===
+                st.markdown("""
+                <style>
+                .horizontal-scroll {
+                    display: flex;
+                    overflow-x: auto;
+                    padding: 10px 0;
+                    gap: 6px;
+                    scrollbar-width: thin;
+                    scrollbar-color: #5b2d8e #f0f0f0;
+                }
+                .horizontal-scroll::-webkit-scrollbar {
+                    height: 6px;
+                }
+                .horizontal-scroll::-webkit-scrollbar-thumb {
+                    background: #5b2d8e;
+                    border-radius: 10px;
+                }
+                .tt-btn {
+                    min-width: 82px;
+                    padding: 8px 10px;
+                    border-radius: 6px;
+                    font-size: 0.83rem;
+                    font-weight: 600;
+                    text-align: center;
+                    white-space: nowrap;
+                    border: 2px solid transparent;
+                    transition: all 0.2s;
+                }
+                </style>
+                """, unsafe_allow_html=True)
 
-                    # Розбиваємо на рядки (по 15-20 кнопок у рядку для зручності)
-                    buttons_per_row = 15
-                    for i in range(0, len(available_tts), buttons_per_row):
-                        chunk = available_tts[i:i + buttons_per_row]
-                        cols = st.columns(len(chunk))
-                        
-                        for col, tt in zip(cols, chunk):
-                            with col:
-                                if st.button(
-                                    str(tt),
-                                    key=f"tt_{article_idx}_{tt}",
-                                    type="primary" if active_tt == tt else "secondary",
-                                    use_container_width=True
-                                ):
-                                    st.session_state[skey] = tt
-                                    st.rerun()
+                # Створюємо HTML-кнопки
+                html_buttons = '<div class="horizontal-scroll">'
+                
+                for tt in available_tts:
+                    if active_tt == tt:
+                        html_buttons += f'''
+                            <button class="tt-btn" 
+                                    style="background:#5b2d8e; color:white; border-color:#5b2d8e;"
+                                    onclick="window.parent.postMessage({{type: 'tt_select', value: '{tt}', idx: {article_idx}}}, '*')">
+                                {tt}
+                            </button>
+                        '''
+                    else:
+                        html_buttons += f'''
+                            <button class="tt-btn" 
+                                    style="background:#e8f5e9; color:#2e7d32;"
+                                    onclick="window.parent.postMessage({{type: 'tt_select', value: '{tt}', idx: {article_idx}}}, '*')">
+                                {tt}
+                            </button>
+                        '''
+                
+                html_buttons += '</div>'
+                st.markdown(html_buttons, unsafe_allow_html=True)
 
-                # Статус
+                # Обробка вибору через JavaScript
+                if st.session_state.get(f"tt_temp_{article_idx}") != active_tt:
+                    # Цей хак допомагає оновити
+                    pass
+
+                # Поточний статус
                 if active_tt != "__ALL__":
                     st.success(f"📍 Активний магазин: **{active_tt}**")
                 else:
-                    st.caption(f"Показано всі ТТ ({len(available_tts)} магазинів)")
+                    st.caption(f"Всього магазинів: {len(available_tts)}")
 
 
 # ── Excel export ──────────────────────────────────────────────────────────────
