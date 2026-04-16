@@ -669,17 +669,27 @@ def main():
 
     /* Slicer button tweaks */
     div[data-testid="stButton"] > button[kind="primary"] {
-        background-color: #5b2d8e !important;
-        color: white !important;
-        border: 2px solid #5b2d8e !important;
-        font-weight: 700 !important;
-        font-size: 0.72rem !important;
-    }
-    div[data-testid="stButton"] > button[kind="secondary"] {
-        background-color: #f4f0fa !important;
-        color: #5b2d8e !important;
-        border: 1px solid #c9b6e8 !important;
-        font-size: 0.72rem !important;
+    background-color: #5b2d8e !important;
+    color: white !important;
+    border: 2px solid #5b2d8e !important;
+    font-weight: 700 !important;
+    font-size: 0.60rem !important;
+    padding: 0.25rem 0.4rem !important;
+    line-height: 1.1 !important;
+}
+
+div[data-testid="stButton"] > button[kind="secondary"] {
+    background-color: #f4f0fa !important;
+    color: #5b2d8e !important;
+    border: 1px solid #c9b6e8 !important;
+    font-size: 0.60rem !important;
+    padding: 0.25rem 0.4rem !important;
+    line-height: 1.1 !important;
+}
+
+div[data-testid="stButton"] > button:hover {
+    transform: scale(0.98);
+}
     }
     div[data-testid="stButton"] > button[kind="secondary"]:hover {
         background-color: #e8d5f5 !important;
