@@ -679,7 +679,12 @@ def main():
     .block-sep { border-top:2px solid #5b2d8e; margin:16px 0 10px 0; }
 
     /* Slicer button tweaks */
-    div[data-testid="stButton"] > button[kind="primary"] {
+    div[data-testid="stButton"] > button[kind="primary"],
+div[data-testid="stButton"] > button[kind="secondary"] {
+    padding: 2px 6px !important;      /* ⬅️ менше відступів */
+    font-size: 0.65rem !important;    /* ⬅️ менший текст */
+    border-radius: 6px !important;    /* ⬅️ компактніше */
+    min-height: 26px !important;      /* ⬅️ висота */
         background-color: #5b2d8e !important;
         color: white !important;
         border: 2px solid #5b2d8e !important;
