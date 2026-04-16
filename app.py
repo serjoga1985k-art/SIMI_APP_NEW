@@ -378,7 +378,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     wb = Workbook()
     wb.remove(wb.active)
 
-    # ── 1. Зведена таблиця (план-факт по статтях) ─────────────────────
+    # ── 1. Зведена таблиця ──────────────────────────────────────
     ws_p = wb.create_sheet("Зведена_таблиця")
     ws_p.freeze_panes = "B2"
     header = ["Стаття"] + month_labels_list + ["РАЗОМ"]
@@ -410,7 +410,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 if isinstance(v, (int, float)) and v < 0:
                     c.font = Font(name="Arial", size=9, color="C0392B")
 
-    # ── 2. Листи по статтях (план-факт + графік) ─────────────────────
+    # ── 2. Листи по статтях з графіками ─────────────────────────
     row_labels = ["План", "Факт", "Average", "Дельта"]
     row_keys   = ["Plan", "Fact", "Average", "Delta"]
     row_fills  = ["FFFFFF", "e8d5f5", "fde8e8", "fff9e0"]
@@ -419,12 +419,10 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     for article in articles_to_show:
         tdf  = build_article_monthly(df, df_filtered, col_tt, col_article,
                                      col_month, col_value, col_plf, article, tt_val, group_factors)
-        safe = article[:28].replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_") \
-                           .replace("?", "_").replace("[", "_").replace("]", "_").replace("|", "_")
+        safe = article[:28].replace("/", "_").replace("\\", "_")
         ws   = wb.create_sheet(safe)
         ws.freeze_panes = "B3"
 
-        # заголовок статті
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=15)
         tc = ws.cell(row=1, column=1, value=article)
         tc.font = Font(bold=True, color="FFFFFF", name="Arial", size=12)
@@ -469,7 +467,6 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         for ci in range(2, 15):
             scw(ws, ci, 11)
 
-        # графік (залишаємо як був)
         x = month_labels_list
         fig = go.Figure()
         fig.add_trace(go.Bar(x=x, y=[tdf.loc[m, "Plan"] for m in range(1, 13)],
@@ -506,9 +503,18 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             ws.cell(row=7, column=1,
                     value="⚠️ Графік недоступний (встановіть kaleido: pip install kaleido)")
 
-    # ── 3. Теплова карта + ТОП/АНТИТОП (глобально + в розрізі кожної статті) ──
+    # ── 3. Heatmap ───────────────────────────────────────────────
     if group_factors:
-        # обчислюємо дані один раз (для всіх статей)
+        ws_h = wb.create_sheet("Heatmap")
+        ws_h.freeze_panes = "B2"
+        heat_header = [col_tt] + month_labels_list + ["РАЗОМ"]
+        for ci, h in enumerate(heat_header, 1):
+            c = ws_h.cell(row=1, column=ci, value=h)
+            c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
+            c.fill = hdr_fill("5b2d8e")
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = thin_border()
+
         df_num2 = df.copy()
         df_num2[col_value] = pd.to_numeric(df_num2[col_value], errors="coerce")
         global_avg_std2 = (
@@ -535,17 +541,6 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         vc = {"Delta": "Delta", "Delta %": "Delta_%", "Z-score": "Z",
               "Fact": "Fact", "Average": "Average_Calc"}.get(mode, "Delta")
 
-        # ── Глобальна теплова карта (сума по всіх статтях) ──
-        ws_h = wb.create_sheet("Heatmap")
-        ws_h.freeze_panes = "B2"
-        heat_header = [col_tt] + month_labels_list + ["РАЗОМ"]
-        for ci, h in enumerate(heat_header, 1):
-            c = ws_h.cell(row=1, column=ci, value=h)
-            c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
-            c.fill = hdr_fill("5b2d8e")
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.border = thin_border()
-
         heat2 = tt_table2.pivot_table(index=col_tt, columns="_m", values=vc, aggfunc="sum")
         for m in range(1, 13):
             if m not in heat2.columns:
@@ -553,6 +548,17 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         heat2 = heat2[sorted(heat2.columns)]
         heat2.columns = [MONTH_LABELS.get(int(c), str(c)) for c in heat2.columns]
         heat2["РАЗОМ"] = heat2.sum(axis=1, numeric_only=True)
+
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.colors as mcolors
+            cmap_obj = plt.get_cmap("RdYlGn_r")
+            flat = heat2.values.flatten().astype(float)
+            flat = flat[~np.isnan(flat)]
+            norm = mcolors.Normalize(vmin=float(np.nanmin(flat)), vmax=float(np.nanmax(flat)))
+            use_cmap = True
+        except Exception:
+            use_cmap = False
 
         for ri, (idx, row) in enumerate(heat2.iterrows(), 2):
             c0 = ws_h.cell(row=ri, column=1, value=idx)
@@ -569,18 +575,24 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 else:
                     c.value = float(v)
                     c.number_format = NUM_FMT
+                    if use_cmap:
+                        rgba = cmap_obj(norm(float(v)))
+                        hx = "{:02X}{:02X}{:02X}".format(
+                            int(rgba[0]*255), int(rgba[1]*255), int(rgba[2]*255))
+                        c.fill = hdr_fill(hx)
                     c.font = Font(name="Arial", size=9, color="000000")
+
         ws_h.column_dimensions["A"].width = 20
         for ci in range(2, len(heat_header) + 1):
             scw(ws_h, ci, 11)
 
-        # ── Глобальний TOP / ANTITOP ──
-        ws_top = wb.create_sheet("TOP_ANTITOP")
-        sum_val2 = tt_table2.groupby(col_tt)[vc].sum().reset_index()
+        # ── 4. TOP / ANTITOP ─────────────────────────────────────
+        ws_top     = wb.create_sheet("TOP_ANTITOP")
+        sum_val2   = tt_table2.groupby(col_tt)[vc].sum().reset_index()
         top_df     = sum_val2.sort_values(vc, ascending=True).head(50)
         antitop_df = sum_val2.sort_values(vc, ascending=False).head(50)
 
-        def write_block(ws_top, start_col, title_text, df_block, cmap_name):
+        def write_block(start_col, title_text, df_block, cmap_name):
             tc = ws_top.cell(row=1, column=start_col, value=title_text)
             tc.font = Font(bold=True, color="FFFFFF", name="Arial", size=11)
             tc.fill = hdr_fill("5b2d8e")
@@ -597,8 +609,8 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 vals_arr = df_block[vc].values.astype(float)
                 nm = mcolors.Normalize(vmin=float(np.nanmin(vals_arr)),
                                        vmax=float(np.nanmax(vals_arr)))
-                cm2 = plt.get_cmap(cmap_name)
-                use_c = True
+                cm2     = plt.get_cmap(cmap_name)
+                use_c   = True
             except Exception:
                 use_c = False
             for ri2, row2 in enumerate(df_block.itertuples(index=False), 3):
@@ -616,76 +628,17 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                     hx2 = "{:02X}{:02X}{:02X}".format(
                         int(rgba2[0]*255), int(rgba2[1]*255), int(rgba2[2]*255))
                     c2.fill = hdr_fill(hx2)
-                    r2, g2, b2 = int(rgba2[0]*255), int(rgba2[1]*255), int(rgba2[2]*255)
-                    luminance = (0.299*r2 + 0.587*g2 + 0.114*b2) / 255
-                    font_color = "000000" if luminance > 0.5 else "FFFFFF"
+                    r2, g2, b2   = int(rgba2[0]*255), int(rgba2[1]*255), int(rgba2[2]*255)
+                    luminance    = (0.299*r2 + 0.587*g2 + 0.114*b2) / 255
+                    font_color   = "000000" if luminance > 0.5 else "FFFFFF"
                     c2.font = Font(name="Arial", size=9, color=font_color)
                 else:
                     c2.font = Font(name="Arial", size=9)
             ws_top.column_dimensions[get_column_letter(start_col)].width = 22
             ws_top.column_dimensions[get_column_letter(start_col + 1)].width = 14
 
-        write_block(ws_top, 1, "✅ TOP (економія)", top_df, "RdYlGn")
-        write_block(ws_top, 4, "❌ ANTITOP (переліміт)", antitop_df, "RdYlGn_r")
-
-        # ── Теплова карта + TOP/ANTITOP В РОЗРІЗІ КОЖНОЇ СТАТТІ ──
-        for article in articles_to_show:
-            art_table = tt_table2[tt_table2[col_article] == article].copy()
-            if art_table.empty:
-                continue
-
-            safe = article[:28].replace("/", "_").replace("\\", "_").replace(":", "_") \
-                               .replace("*", "_").replace("?", "_").replace("[", "_") \
-                               .replace("]", "_").replace("|", "_")
-
-            # 1. Теплова карта по статті
-            ws_h_art = wb.create_sheet(f"Heatmap_{safe}")
-            ws_h_art.freeze_panes = "B2"
-            heat_header = [col_tt] + month_labels_list + ["РАЗОМ"]
-            for ci, h in enumerate(heat_header, 1):
-                c = ws_h_art.cell(row=1, column=ci, value=h)
-                c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
-                c.fill = hdr_fill("5b2d8e")
-                c.alignment = Alignment(horizontal="center", vertical="center")
-                c.border = thin_border()
-
-            heat2 = art_table.pivot_table(index=col_tt, columns="_m", values=vc, aggfunc="sum")
-            for m in range(1, 13):
-                if m not in heat2.columns:
-                    heat2[m] = None
-            heat2 = heat2[sorted(heat2.columns)]
-            heat2.columns = [MONTH_LABELS.get(int(c), str(c)) for c in heat2.columns]
-            heat2["РАЗОМ"] = heat2.sum(axis=1, numeric_only=True)
-
-            for ri, (idx, row) in enumerate(heat2.iterrows(), 2):
-                c0 = ws_h_art.cell(row=ri, column=1, value=idx)
-                c0.border = thin_border()
-                c0.font = Font(name="Arial", size=9)
-                for ci, col_name in enumerate(heat2.columns, 2):
-                    v = row[col_name]
-                    c = ws_h_art.cell(row=ri, column=ci)
-                    c.border = thin_border()
-                    c.alignment = Alignment(horizontal="right")
-                    if pd.isna(v):
-                        c.value = None
-                        c.fill = hdr_fill("FFFFFF")
-                    else:
-                        c.value = float(v)
-                        c.number_format = NUM_FMT
-                        c.font = Font(name="Arial", size=9, color="000000")
-
-            ws_h_art.column_dimensions["A"].width = 20
-            for ci in range(2, len(heat_header) + 1):
-                scw(ws_h_art, ci, 11)
-
-            # 2. TOP / ANTITOP по статті
-            ws_top_art = wb.create_sheet(f"TOP_ANTITOP_{safe}")
-            sum_val2_art = art_table.groupby(col_tt)[vc].sum().reset_index()
-            top_df_art     = sum_val2_art.sort_values(vc, ascending=True).head(50)
-            antitop_df_art = sum_val2_art.sort_values(vc, ascending=False).head(50)
-
-            write_block(ws_top_art, 1, f"✅ TOP (економія) — {article}", top_df_art, "RdYlGn")
-            write_block(ws_top_art, 4, f"❌ ANTITOP (переліміт) — {article}", antitop_df_art, "RdYlGn_r")
+        write_block(1, "✅ TOP (економія)",      top_df,     "RdYlGn")
+        write_block(4, "❌ ANTITOP (переліміт)", antitop_df, "RdYlGn_r")
 
     output = io.BytesIO()
     wb.save(output)
