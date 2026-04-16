@@ -376,7 +376,7 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-                                # ── TT slicer — сучасний та робочий варіант ─────────────────────────────
+                                    # ── TT slicer з горизонтальною прокруткою (полоса) ───────────────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
@@ -396,29 +396,73 @@ def render_article_block(title, table_df, chart_title,
 
                 st.markdown("**Оберіть магазин:**")
 
-                # Горизонтальна прокрутка через columns + кілька рядків
-                buttons_per_row = 12   # можеш змінити на 10 або 15
-                
-                for i in range(0, len(available_tts), buttons_per_row):
-                    chunk = available_tts[i:i + buttons_per_row]
-                    cols = st.columns(len(chunk))
-                    
-                    for col, tt in zip(cols, chunk):
-                        with col:
-                            if st.button(
-                                str(tt),
-                                key=f"tt_btn_{article_idx}_{i}_{tt}",
-                                type="primary" if active_tt == tt else "secondary",
-                                use_container_width=True
-                            ):
-                                st.session_state[skey] = tt
-                                st.rerun()
+                # === ГОРИЗОНТАЛЬНА ПРОКРУТКА ===
+                st.markdown("""
+                <style>
+                .tt-scroll-container {
+                    overflow-x: auto;
+                    padding: 12px 0;
+                    white-space: nowrap;
+                    border: 1px solid #ddd;
+                    border-radius: 8px;
+                    background: #fafafa;
+                    scrollbar-width: thin;
+                    scrollbar-color: #5b2d8e #e0e0e0;
+                }
+                .tt-scroll-container::-webkit-scrollbar {
+                    height: 8px;
+                }
+                .tt-scroll-container::-webkit-scrollbar-thumb {
+                    background: #5b2d8e;
+                    border-radius: 10px;
+                }
+                .tt-chip {
+                    display: inline-block;
+                    padding: 8px 14px;
+                    margin: 4px 4px;
+                    border-radius: 20px;
+                    font-size: 0.85rem;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                    min-width: 75px;
+                    text-align: center;
+                }
+                </style>
+                """, unsafe_allow_html=True)
 
-                # Статус
+                # Створюємо HTML з кнопками-чіпами
+                chips_html = '<div class="tt-scroll-container">'
+                for tt in available_tts:
+                    if active_tt == tt:
+                        chips_html += f'''
+                            <span class="tt-chip" 
+                                  style="background:#5b2d8e; color:white; border:2px solid #5b2d8e;"
+                                  onclick="window.parent.postMessage({{'type':'tt_select','value':'{tt}','idx':{article_idx}}}, '*')">
+                                {tt}
+                            </span>
+                        '''
+                    else:
+                        chips_html += f'''
+                            <span class="tt-chip" 
+                                  style="background:#e8f5e9; color:#2e7d32; border:2px solid #c3e6c8;"
+                                  onclick="window.parent.postMessage({{'type':'tt_select','value':'{tt}','idx':{article_idx}}}, '*')">
+                                {tt}
+                            </span>
+                        '''
+                chips_html += '</div>'
+
+                st.markdown(chips_html, unsafe_allow_html=True)
+
+                # Обробка вибору
+                if st.session_state.get(f"last_selected_{article_idx}") != active_tt:
+                    pass  # тригер оновлення
+
+                # Поточний статус
                 if active_tt != "__ALL__":
                     st.success(f"📍 Активний магазин: **{active_tt}**")
                 else:
-                    st.caption(f"Всього магазинів: {len(available_tts)}")
+                    st.caption(f"Всього: {len(available_tts)} магазинів")
 
 
 # ── Excel export ──────────────────────────────────────────────────────────────
