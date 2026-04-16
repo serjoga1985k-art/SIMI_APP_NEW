@@ -309,9 +309,46 @@ def render_article_block(title, table_df, chart_title,
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
     # ═══════════════════════════════════════════════════════════════
-    # TT SLICER — buttons below the chart
-    # ═══════════════════════════════════════════════════════════════
-    if df_filtered is not None and col_tt is not None:
+   # ═══════════════════════════════════════════════════════════════
+# TT SLICER — collapsible
+# ═══════════════════════════════════════════════════════════════
+if df_filtered is not None and col_tt is not None:
+    available_tts = sorted(
+        df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(),
+        key=str
+    )
+
+    if available_tts:
+        with st.expander("🏪 Слайсер по ТТ — клікни для деталізації", expanded=False):
+
+            # Build options
+            all_options = ["__ALL__"] + list(available_tts)
+
+            CHUNK = 8
+            chunks = [all_options[i:i + CHUNK] for i in range(0, len(all_options), CHUNK)]
+
+            for chunk_idx, chunk in enumerate(chunks):
+                cols = st.columns(len(chunk))
+                for ci, tt_opt in enumerate(chunk):
+                    label = "🔁 Всі" if tt_opt == "__ALL__" else str(tt_opt)
+                    is_active = (active_tt == tt_opt)
+                    btn_type = "primary" if is_active else "secondary"
+
+                    with cols[ci]:
+                        if st.button(
+                            label,
+                            key=f"slicer_{article_idx}_{chunk_idx}_{ci}_{tt_opt}",
+                            type=btn_type,
+                            use_container_width=True,
+                        ):
+                            st.session_state[skey] = tt_opt
+                            st.rerun()
+
+            # Hint
+            if active_tt != "__ALL__":
+                st.caption(f"📍 Показано тільки: **{active_tt}**")
+            else:
+                st.caption("Показано всі ТТ")
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(),
             key=str
