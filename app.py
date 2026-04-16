@@ -376,7 +376,7 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-        # ── TT slicer (зменшена та покращена версія) ─────────────────────────────
+            # ── TT slicer (3 рядки по 10 кнопок + прокрутка) ───────────────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
@@ -385,30 +385,57 @@ def render_article_block(title, table_df, chart_title,
         
         if available_tts:
             with st.expander("🏪 Слайсер по ТТ — деталізація по магазину", expanded=False):
-                col1, col2 = st.columns([3, 1])
+                st.caption("Натисни на магазин для детального перегляду")
+
+                # "Всі" кнопка
+                if st.button("🔁 **ВСІ МАГАЗИНИ**", 
+                            type="primary" if active_tt == "__ALL__" else "secondary",
+                            use_container_width=True,
+                            key=f"all_tt_{article_idx}"):
+                    st.session_state[skey] = "__ALL__"
+                    st.rerun()
+
+                st.markdown("**Або обери конкретний магазин:**")
+
+                # 3 рядки по 10 кнопок
+                n = len(available_tts)
+                cols_per_row = 10
+                rows = 3
                 
-                with col1:
-                    # Головний селект — набагато компактніше
-                    selected_option = st.selectbox(
-                        "Оберіть ТТ для детального перегляду:",
-                        options=["__ALL__ (Всі магазини)"] + available_tts,
-                        index=0 if active_tt == "__ALL__" else available_tts.index(active_tt) + 1,
-                        key=f"slicer_select_{article_idx}"
+                for row in range(rows):
+                    chunk = available_tts[row*cols_per_row : (row+1)*cols_per_row]
+                    if not chunk:
+                        break
+                    cols = st.columns(cols_per_row)
+                    for i, tt in enumerate(chunk):
+                        with cols[i]:
+                            if st.button(
+                                str(tt), 
+                                key=f"tt_btn_{article_idx}_{row}_{i}",
+                                type="primary" if active_tt == tt else "secondary",
+                                use_container_width=True
+                            ):
+                                st.session_state[skey] = tt
+                                st.rerun()
+
+                # Якщо більше 30 магазинів — додаємо прокрутку через selectbox
+                if n > 30:
+                    st.markdown("---")
+                    remaining = available_tts[rows*cols_per_row:]
+                    selected = st.selectbox(
+                        f"Інші магазини ({len(remaining)})...",
+                        options=remaining,
+                        key=f"scroll_select_{article_idx}"
                     )
-                    
-                    new_tt = "__ALL__" if selected_option == "__ALL__ (Всі магазини)" else selected_option
-                
-                with col2:
-                    st.markdown("###")
-                    if st.button("✅ Застосувати", type="primary", use_container_width=True):
-                        st.session_state[skey] = new_tt
+                    if st.button("✅ Вибрати цей магазин", type="primary", key=f"select_extra_{article_idx}"):
+                        st.session_state[skey] = selected
                         st.rerun()
-                
-                # Додаткова інформація
+
+                # Інформація внизу
                 if active_tt != "__ALL__":
-                    st.success(f"📍 Зараз показано: **{active_tt}**")
+                    st.success(f"📍 Активний магазин: **{active_tt}**")
                 else:
-                    st.caption(f"Показано всі ТТ ({len(available_tts)} магазинів)")
+                    st.caption(f"Показано всі ТТ ({n} магазинів)")
 
 
 # ── Excel export ──────────────────────────────────────────────────────────────
