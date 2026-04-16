@@ -376,7 +376,7 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-                                            # ── TT slicer з видимою горизонтальною прокруткою ───────────────────────
+                                                # ── TT slicer з горизонтальною прокруткою (надійний варіант) ─────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
@@ -386,7 +386,6 @@ def render_article_block(title, table_df, chart_title,
         if available_tts:
             with st.expander("🏪 Слайсер по ТТ — деталізація по магазину", expanded=False):
                 
-                # Кнопка "ВСІ МАГАЗИНИ"
                 if st.button("🔁 ВСІ МАГАЗИНИ", 
                             type="primary" if active_tt == "__ALL__" else "secondary",
                             use_container_width=True,
@@ -396,78 +395,47 @@ def render_article_block(title, table_df, chart_title,
 
                 st.markdown("**Оберіть магазин:**")
 
-                # CSS для красивого скролбару
+                # CSS для горизонтальної прокрутки
                 st.markdown("""
                 <style>
-                .tt-scroll-wrapper {
+                .scroll-row {
+                    display: flex;
                     overflow-x: auto;
-                    padding: 12px 8px;
-                    background: #f8f9fa;
-                    border: 1px solid #e0e0e0;
-                    border-radius: 10px;
-                    white-space: nowrap;
+                    gap: 6px;
+                    padding: 10px 0;
                     scrollbar-width: thin;
-                    scrollbar-color: #5b2d8e #d1d5db;
+                    scrollbar-color: #5b2d8e #e5e7eb;
                 }
-                .tt-scroll-wrapper::-webkit-scrollbar {
+                .scroll-row::-webkit-scrollbar {
                     height: 10px;
                 }
-                .tt-scroll-wrapper::-webkit-scrollbar-track {
-                    background: #f1f1f1;
-                    border-radius: 10px;
-                }
-                .tt-scroll-wrapper::-webkit-scrollbar-thumb {
+                .scroll-row::-webkit-scrollbar-thumb {
                     background: #5b2d8e;
                     border-radius: 10px;
-                }
-                .tt-chip {
-                    display: inline-block;
-                    padding: 9px 16px;
-                    margin: 4px 3px;
-                    border-radius: 20px;
-                    font-size: 0.86rem;
-                    font-weight: 600;
-                    cursor: pointer;
-                    transition: all 0.2s ease;
-                    min-width: 68px;
-                    text-align: center;
                 }
                 </style>
                 """, unsafe_allow_html=True)
 
-                # HTML з горизонтальною прокруткою
-                html = '<div class="tt-scroll-wrapper">'
-                for tt in available_tts:
-                    if active_tt == tt:
-                        html += f'''
-                        <span class="tt-chip" style="background:#5b2d8e; color:white; border:2px solid #4a2578;"
-                              onclick="window.parent.postMessage({{'tt_select': '{tt}', 'idx': {article_idx}}}, '*')">
-                            {tt}
-                        </span>
-                        '''
-                    else:
-                        html += f'''
-                        <span class="tt-chip" style="background:#f0fdf4; color:#166534; border:2px solid #86efac;"
-                              onclick="window.parent.postMessage({{'tt_select': '{tt}', 'idx': {article_idx}}}, '*')">
-                            {tt}
-                        </span>
-                        '''
-                html += '</div>'
-                
-                st.markdown(html, unsafe_allow_html=True)
-
-                # Обробка вибору (postMessage)
-                if st.query_params.get("tt_select"):
-                    selected = st.query_params.get("tt_select")
-                    idx = st.query_params.get("idx")
-                    if idx and int(idx) == article_idx and selected in available_tts:
-                        st.session_state[skey] = selected
-                        st.query_params.clear()
-                        st.rerun()
+                # Головний контейнер з прокруткою
+                scroll_container = st.container()
+                with scroll_container:
+                    # Робимо один довгий рядок
+                    cols = st.columns(len(available_tts))   # створюємо стільки колонок, скільки магазинів
+                    
+                    for idx, tt in enumerate(available_tts):
+                        with cols[idx]:
+                            if st.button(
+                                str(tt),
+                                key=f"tt_btn_{article_idx}_{idx}_{tt}",
+                                type="primary" if active_tt == tt else "secondary",
+                                use_container_width=True
+                            ):
+                                st.session_state[skey] = tt
+                                st.rerun()
 
                 # Статус
                 if active_tt != "__ALL__":
-                    st.success(f"📍 Активний магазин: **{active_tt}**")
+                    st.success(f"📍 Активний: **{active_tt}**")
                 else:
                     st.caption(f"Всього магазинів: {len(available_tts)}")
 
