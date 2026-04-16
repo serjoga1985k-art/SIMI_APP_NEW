@@ -255,13 +255,13 @@ def render_article_block(title, table_df, chart_title,
         best_block = f"""
           <div style="flex:1;min-width:220px;">
             <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                        letter-spacing:.04em;">✅ Найекономніші магазини (мін. Fact)</div>
+                        letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
             <div>{best_pills if best_pills else
                   '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
           </div>
           <div style="flex:1;min-width:220px;">
             <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                        letter-spacing:.04em;">❌ Найбільш витратні магазини (макс. Fact)</div>
+                        letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div>
             <div>{worst_pills if worst_pills else
                   '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
           </div>
@@ -324,7 +324,7 @@ def render_article_block(title, table_df, chart_title,
             # Build options
             all_options = ["__ALL__"] + list(available_tts)
 
-            CHUNK = 12
+            CHUNK = 8
             chunks = [all_options[i:i + CHUNK] for i in range(0, len(all_options), CHUNK)]
 
             for chunk_idx, chunk in enumerate(chunks):
@@ -503,140 +503,227 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             ws.cell(row=7, column=1,
                     value="⚠️ Графік недоступний (встановіть kaleido: pip install kaleido)")
 
-       # ── 3. Heatmap + TOP/ANTITOP + Plan-Fact ПО СТАТТЯХ ─────────────
-    for article in articles_to_show:
+    # ── 3. Heatmap ───────────────────────────────────────────────
+    if group_factors:
+        ws_h = wb.create_sheet("Heatmap")
+        ws_h.freeze_panes = "B2"
+        heat_header = [col_tt] + month_labels_list + ["РАЗОМ"]
+        for ci, h in enumerate(heat_header, 1):
+            c = ws_h.cell(row=1, column=ci, value=h)
+            c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
+            c.fill = hdr_fill("5b2d8e")
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = thin_border()
 
-        data_art = df_filtered[
-            (df_filtered[col_article] == article) &
-            (df_filtered[col_plf] == "F")
-        ].copy()
-
-        if data_art.empty:
-            continue
-
-        data_art["_m"] = get_month_num(data_art[col_month])
-
-        # ── GLOBAL AVG ──
-        global_avg_std = (
-            df[df[col_plf] == "F"]
+        df_num2 = df.copy()
+        df_num2[col_value] = pd.to_numeric(df_num2[col_value], errors="coerce")
+        global_avg_std2 = (
+            df_num2[df_num2[col_plf] == "F"]
             .groupby(group_factors + [col_article], as_index=False)[col_value]
             .agg(Average_Calc="mean", Std="std")
         )
-
-        tt_grp = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
-
-        tt_table = (
-            data_art.groupby(tt_grp, as_index=False)[col_value]
-            .sum()
-            .rename(columns={col_value: "Fact"})
+        data_heat2 = df_filtered[
+            (df_filtered[col_plf] == "F") &
+            (df_filtered[col_article].isin(articles_to_show))
+        ].copy()
+        data_heat2["_m"] = get_month_num(data_heat2[col_month])
+        tt_grp2 = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
+        tt_table2 = (
+            data_heat2.groupby(tt_grp2, as_index=False)[col_value]
+            .sum().rename(columns={col_value: "Fact"})
         )
+        merge_cols2 = list(dict.fromkeys(group_factors + [col_article]))
+        tt_table2 = pd.merge(tt_table2, global_avg_std2, on=merge_cols2, how="left")
+        tt_table2["Delta"]   = tt_table2["Fact"] - tt_table2["Average_Calc"]
+        tt_table2["Delta_%"] = tt_table2["Delta"] / tt_table2["Average_Calc"].replace(0, np.nan)
+        tt_table2["Z"]       = tt_table2["Delta"] / tt_table2["Std"].replace(0, np.nan)
 
-        merge_cols = list(dict.fromkeys(group_factors + [col_article]))
-        tt_table = pd.merge(tt_table, global_avg_std, on=merge_cols, how="left")
+        vc = {"Delta": "Delta", "Delta %": "Delta_%", "Z-score": "Z",
+              "Fact": "Fact", "Average": "Average_Calc"}.get(mode, "Delta")
 
-        tt_table["Delta"]   = tt_table["Fact"] - tt_table["Average_Calc"]
-        tt_table["Delta_%"] = tt_table["Delta"] / tt_table["Average_Calc"].replace(0, np.nan)
-
-        val_col = {
-            "Delta": "Delta",
-            "Delta %": "Delta_%",
-            "Fact": "Fact",
-            "Average": "Average_Calc",
-        }.get(mode, "Delta")
-
-        # ─────────────────────────────────────────
-        # 🌡️ HEATMAP
-        # ─────────────────────────────────────────
-        ws_h = wb.create_sheet(f"Heatmap_{article[:20]}")
-        ws_h.freeze_panes = "B2"
-
-        heat = tt_table.pivot_table(index=col_tt, columns="_m", values=val_col, aggfunc="sum")
-
+        heat2 = tt_table2.pivot_table(index=col_tt, columns="_m", values=vc, aggfunc="sum")
         for m in range(1, 13):
-            if m not in heat.columns:
-                heat[m] = None
+            if m not in heat2.columns:
+                heat2[m] = None
+        heat2 = heat2[sorted(heat2.columns)]
+        heat2.columns = [MONTH_LABELS.get(int(c), str(c)) for c in heat2.columns]
+        heat2["РАЗОМ"] = heat2.sum(axis=1, numeric_only=True)
 
-        heat = heat[sorted(heat.columns)]
-        heat.columns = [MONTH_LABELS[m] for m in range(1, 13)]
-        heat["РАЗОМ"] = heat.sum(axis=1, numeric_only=True)
-
-        # HEADER
-        for ci, coln in enumerate(["ТТ"] + list(heat.columns), 1):
-            c = ws_h.cell(row=1, column=ci, value=coln)
-            c.font = Font(bold=True, color="FFFFFF")
-            c.fill = hdr_fill("5b2d8e")
-            c.border = thin_border()
-
-        # DATA + COLOR
         try:
             import matplotlib.pyplot as plt
             import matplotlib.colors as mcolors
-            cmap = plt.get_cmap("RdYlGn_r")
-            flat = heat.values.flatten().astype(float)
+            cmap_obj = plt.get_cmap("RdYlGn_r")
+            flat = heat2.values.flatten().astype(float)
             flat = flat[~np.isnan(flat)]
-            norm = mcolors.Normalize(vmin=np.nanmin(flat), vmax=np.nanmax(flat))
+            norm = mcolors.Normalize(vmin=float(np.nanmin(flat)), vmax=float(np.nanmax(flat)))
             use_cmap = True
-        except:
+        except Exception:
             use_cmap = False
 
-        for ri, (idx, row) in enumerate(heat.iterrows(), 2):
-            ws_h.cell(row=ri, column=1, value=idx)
-
-            for ci, coln in enumerate(heat.columns, 2):
-                v = row[coln]
-                c = ws_h.cell(row=ri, column=ci, value=None if pd.isna(v) else float(v))
-                c.number_format = NUM_FMT
+        for ri, (idx, row) in enumerate(heat2.iterrows(), 2):
+            c0 = ws_h.cell(row=ri, column=1, value=idx)
+            c0.border = thin_border()
+            c0.font = Font(name="Arial", size=9)
+            for ci, col_name in enumerate(heat2.columns, 2):
+                v = row[col_name]
+                c = ws_h.cell(row=ri, column=ci)
                 c.border = thin_border()
+                c.alignment = Alignment(horizontal="right")
+                if pd.isna(v):
+                    c.value = None
+                    c.fill = hdr_fill("FFFFFF")
+                else:
+                    c.value = float(v)
+                    c.number_format = NUM_FMT
+                    if use_cmap:
+                        rgba = cmap_obj(norm(float(v)))
+                        hx = "{:02X}{:02X}{:02X}".format(
+                            int(rgba[0]*255), int(rgba[1]*255), int(rgba[2]*255))
+                        c.fill = hdr_fill(hx)
+                    c.font = Font(name="Arial", size=9, color="000000")
 
-                if use_cmap and pd.notna(v):
-                    rgba = cmap(norm(v))
-                    hx = "{:02X}{:02X}{:02X}".format(
-                        int(rgba[0]*255), int(rgba[1]*255), int(rgba[2]*255))
-                    c.fill = hdr_fill(hx)
+        ws_h.column_dimensions["A"].width = 20
+        for ci in range(2, len(heat_header) + 1):
+            scw(ws_h, ci, 11)
 
-        # ─────────────────────────────────────────
-        # 🏆 TOP / ANTITOP
-        # ─────────────────────────────────────────
-        ws_top = wb.create_sheet(f"TOP_{article[:20]}")
+        # ── 4. TOP / ANTITOP ─────────────────────────────────────
+        ws_top     = wb.create_sheet("TOP_ANTITOP")
+        sum_val2   = tt_table2.groupby(col_tt)[vc].sum().reset_index()
+        top_df     = sum_val2.sort_values(vc, ascending=True).head(50)
+        antitop_df = sum_val2.sort_values(vc, ascending=False).head(50)
 
-        sum_val = tt_table.groupby(col_tt)[val_col].sum().reset_index()
+        def write_block(start_col, title_text, df_block, cmap_name):
+            tc = ws_top.cell(row=1, column=start_col, value=title_text)
+            tc.font = Font(bold=True, color="FFFFFF", name="Arial", size=11)
+            tc.fill = hdr_fill("5b2d8e")
+            ws_top.merge_cells(start_row=1, start_column=start_col,
+                               end_row=1, end_column=start_col + 1)
+            for ci2, h2 in enumerate([col_tt, vc], start_col):
+                c = ws_top.cell(row=2, column=ci2, value=h2)
+                c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
+                c.fill = hdr_fill("2e7d32")
+                c.border = thin_border()
+            try:
+                import matplotlib.pyplot as plt
+                import matplotlib.colors as mcolors
+                vals_arr = df_block[vc].values.astype(float)
+                nm = mcolors.Normalize(vmin=float(np.nanmin(vals_arr)),
+                                       vmax=float(np.nanmax(vals_arr)))
+                cm2     = plt.get_cmap(cmap_name)
+                use_c   = True
+            except Exception:
+                use_c = False
+            for ri2, row2 in enumerate(df_block.itertuples(index=False), 3):
+                tt_v  = getattr(row2, col_tt, "")
+                val_v = getattr(row2, vc, 0)
+                ws_top.cell(row=ri2, column=start_col, value=tt_v).border = thin_border()
+                ws_top.cell(row=ri2, column=start_col).font = Font(name="Arial", size=9)
+                c2 = ws_top.cell(row=ri2, column=start_col + 1,
+                                  value=float(val_v) if pd.notna(val_v) else None)
+                c2.number_format = NUM_FMT
+                c2.border = thin_border()
+                c2.alignment = Alignment(horizontal="right")
+                if use_c and pd.notna(val_v):
+                    rgba2 = cm2(nm(float(val_v)))
+                    hx2 = "{:02X}{:02X}{:02X}".format(
+                        int(rgba2[0]*255), int(rgba2[1]*255), int(rgba2[2]*255))
+                    c2.fill = hdr_fill(hx2)
+                    r2, g2, b2   = int(rgba2[0]*255), int(rgba2[1]*255), int(rgba2[2]*255)
+                    luminance    = (0.299*r2 + 0.587*g2 + 0.114*b2) / 255
+                    font_color   = "000000" if luminance > 0.5 else "FFFFFF"
+                    c2.font = Font(name="Arial", size=9, color=font_color)
+                else:
+                    c2.font = Font(name="Arial", size=9)
+            ws_top.column_dimensions[get_column_letter(start_col)].width = 22
+            ws_top.column_dimensions[get_column_letter(start_col + 1)].width = 14
 
-        top = sum_val.sort_values(val_col, ascending=True).head(20)
-        antitop = sum_val.sort_values(val_col, ascending=False).head(20)
+        write_block(1, "✅ TOP (економія)",      top_df,     "RdYlGn")
+        write_block(4, "❌ ANTITOP (переліміт)", antitop_df, "RdYlGn_r")
 
-        def write_block(start_col, title, df_block):
-            ws_top.cell(row=1, column=start_col, value=title).font = Font(bold=True)
-            for ci, h in enumerate([col_tt, val_col], start_col):
-                ws_top.cell(row=2, column=ci, value=h)
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
 
-            for ri, r in enumerate(df_block.itertuples(index=False), 3):
-                ws_top.cell(row=ri, column=start_col, value=getattr(r, col_tt))
-                ws_top.cell(row=ri, column=start_col+1, value=float(getattr(r, val_col)))
 
-        write_block(1, "TOP", top)
-        write_block(4, "ANTITOP", antitop)
+def main():
+    st.set_page_config(page_title="СІМІ Dashboard", layout="wide")
+    st.markdown("""
+    <style>
+    .simi-header {
+        background: linear-gradient(90deg, #5b2d8e 0%, #7b52ae 100%);
+        color: white; padding: 10px 18px; border-radius: 4px; margin-bottom: 4px;
+    }
+    .simi-logo  { font-size:2rem; font-weight:900; color:#f0c000;
+                  letter-spacing:1px; margin-right:24px; vertical-align:middle; }
+    .simi-store { font-size:1.1rem; font-weight:700; color:white; vertical-align:middle; }
+    .simi-meta-grid { display:grid; grid-template-columns:repeat(6,1fr);
+                      gap:4px 12px; margin-top:6px; }
+    .simi-meta-item { font-size:0.78rem; color:#e0d0f8; }
+    .simi-meta-val  { font-size:0.85rem; font-weight:700; color:white; }
+    .article-selector {
+        background:#f4f0fa; border:2px solid #5b2d8e;
+        border-radius:8px; padding:12px 16px; margin-bottom:14px;
+    }
+    .block-sep { border-top:2px solid #5b2d8e; margin:16px 0 10px 0; }
 
-        # ─────────────────────────────────────────
-        # 📊 PLAN vs FACT
-        # ─────────────────────────────────────────
-        ws_pf = wb.create_sheet(f"PlanFact_{article[:20]}")
+    /* Slicer button tweaks */
+    div[data-testid="stButton"] > button[kind="primary"] {
+        background-color: #5b2d8e !important;
+        color: white !important;
+        border: 2px solid #5b2d8e !important;
+        font-weight: 700 !important;
+        font-size: 0.72rem !important;
+    }
+    div[data-testid="stButton"] > button[kind="secondary"] {
+        background-color: #f4f0fa !important;
+        color: #5b2d8e !important;
+        border: 1px solid #c9b6e8 !important;
+        font-size: 0.72rem !important;
+    }
+    div[data-testid="stButton"] > button[kind="secondary"]:hover {
+        background-color: #e8d5f5 !important;
+        border-color: #5b2d8e !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-        tdf = build_article_monthly(
-            df, df_filtered, col_tt, col_article,
-            col_month, col_value, col_plf, article, tt_val, group_factors
-        )
+    file = st.file_uploader("📂 Завантажте Excel", type=["xlsx", "xlsb"])
+    if file is None:
+        st.info("Завантажте Excel-файл для початку роботи.")
+        st.stop()
 
-        headers = ["Місяць", "Plan", "Fact", "Average", "Delta"]
+    xl         = pd.ExcelFile(file)
+    sheet_name = st.selectbox("Аркуш", xl.sheet_names)
+    df         = load_excel(file, sheet_name)
+    cols       = df.columns.tolist()
 
-        for ci, h in enumerate(headers, 1):
-            ws_pf.cell(row=1, column=ci, value=h).font = Font(bold=True)
+    with st.expander("⚙️ Налаштування колонок", expanded=True):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            col_tt      = st.selectbox("TT (Магазин)",   cols)
+            col_year    = st.selectbox("Year",            cols)
+        with c2:
+            col_month   = st.selectbox("Month",          cols)
+            col_value   = st.selectbox("Значення",       cols)
+        with c3:
+            col_plf     = st.selectbox("PL / F",         cols)
+            col_article = st.selectbox("Стаття бюджету", cols)
+        with c4:
+            col_level0  = st.selectbox("Level_0",        cols)
 
-        for m in range(1, 13):
-            ws_pf.cell(row=m+1, column=1, value=MONTH_LABELS[m])
-            ws_pf.cell(row=m+1, column=2, value=tdf.loc[m, "Plan"])
-            ws_pf.cell(row=m+1, column=3, value=tdf.loc[m, "Fact"])
-            ws_pf.cell(row=m+1, column=4, value=tdf.loc[m, "Average"])
-            ws_pf.cell(row=m+1, column=5, value=tdf.loc[m, "Delta"])
+    with st.expander("🏪 Колонки шапки магазину", expanded=False):
+        sh1, sh2, sh3 = st.columns(3)
+        with sh1:
+            col_city   = st.selectbox("Місто",          ["—"] + cols)
+            col_area   = st.selectbox("Площа",          ["—"] + cols)
+        with sh2:
+            col_format = st.selectbox("Формат ТО",     ["—"] + cols)
+            col_mega   = st.selectbox("Мегасегмент",   ["—"] + cols)
+        with sh3:
+            col_rik    = st.selectbox("Рік",            ["—"] + cols)
+            col_mis    = st.selectbox("Місяць (шапка)", ["—"] + cols)
+
     # ── Sidebar filters ──────────────────────────────────────────
     st.sidebar.markdown("## 🔍 Фільтри")
     year_val   = st.sidebar.multiselect("Year",    sorted(df[col_year].dropna().unique(),   key=str))
@@ -839,11 +926,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
     st.subheader("📋 Зведена таблиця")
     pivot_metric = st.radio("Метрика", ["Fact", "Plan", "Delta (Fact-Plan)"], horizontal=True)
-    col_map_d = {
-    "Fact": "Fact",
-    "Plan": "Plan",
-    "Delta (Fact-Plan)": "Delta"
-}
+    col_map_d    = {"Fact": "Fact", "Plan": "Plan", "Delta (Fact-Plan)": "Delta"}
     metric_col   = col_map_d[pivot_metric]
 
     rows_pivot = []
