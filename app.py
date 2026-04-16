@@ -376,34 +376,39 @@ def render_article_block(title, table_df, chart_title,
     fig = _build_plotly_chart(display_df)
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
-    # TT slicer
+        # ── TT slicer (зменшена та покращена версія) ─────────────────────────────
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
-            df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), key=str
+            df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), 
+            key=str
         )
+        
         if available_tts:
-            with st.expander("🏪 Слайсер по ТТ — клікни для деталізації", expanded=False):
-                all_options = ["__ALL__"] + list(available_tts)
-                for chunk_idx, chunk in enumerate(
-                    [all_options[i:i + 8] for i in range(0, len(all_options), 8)]
-                ):
-                    cols = st.columns(len(chunk))
-                    for ci, tt_opt in enumerate(chunk):
-                        label = "🔁 Всі" if tt_opt == "__ALL__" else str(tt_opt)
-                        with cols[ci]:
-                            if st.button(
-                                label,
-                                key=f"slicer_{article_idx}_{chunk_idx}_{ci}_{hash(str(tt_opt))}",
-                                type="primary" if active_tt == tt_opt else "secondary",
-                                use_container_width=True,
-                            ):
-                                st.session_state[skey] = tt_opt
-                                st.rerun()
-
-                st.caption(
-                    f"📍 Показано тільки: **{active_tt}**"
-                    if active_tt != "__ALL__" else "Показано всі ТТ"
-                )
+            with st.expander("🏪 Слайсер по ТТ — деталізація по магазину", expanded=False):
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    # Головний селект — набагато компактніше
+                    selected_option = st.selectbox(
+                        "Оберіть ТТ для детального перегляду:",
+                        options=["__ALL__ (Всі магазини)"] + available_tts,
+                        index=0 if active_tt == "__ALL__" else available_tts.index(active_tt) + 1,
+                        key=f"slicer_select_{article_idx}"
+                    )
+                    
+                    new_tt = "__ALL__" if selected_option == "__ALL__ (Всі магазини)" else selected_option
+                
+                with col2:
+                    st.markdown("###")
+                    if st.button("✅ Застосувати", type="primary", use_container_width=True):
+                        st.session_state[skey] = new_tt
+                        st.rerun()
+                
+                # Додаткова інформація
+                if active_tt != "__ALL__":
+                    st.success(f"📍 Зараз показано: **{active_tt}**")
+                else:
+                    st.caption(f"Показано всі ТТ ({len(available_tts)} магазинів)")
 
 
 # ── Excel export ──────────────────────────────────────────────────────────────
