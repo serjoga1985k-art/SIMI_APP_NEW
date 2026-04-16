@@ -286,21 +286,21 @@ def _render_metrics_panel(display_df, df_filtered, col_tt, col_article,
             best_pills  = make_pills(tt_totals.head(n),          "#1b5e20", "#e8f5e9")
             worst_pills = make_pills(tt_totals.tail(n).iloc[::-1], "#7f0000", "#ffebee")
 
-    best_block = ""
-    if active_tt == "__ALL__":
-        no_data = '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'
-        best_block = f"""
-        <div style="flex:1;min-width:220px;">
-            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                        letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
-            <div>{best_pills or no_data}</div>
-          </div>
-          <div style="flex:1;min-width:220px;">
-            <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
-                        letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div>
-            <div>{worst_pills or no_data}</div>
-          </div>
-        """
+   best_block = f"""
+<div style="display:flex; gap:12px;">
+    <div style="flex:1;min-width:220px;">
+        <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
+                    letter-spacing:.04em;">✅ Кращі магазини (мін. Fact)</div>
+        <div>{best_pills or no_data}</div>
+    </div>
+
+    <div style="flex:1;min-width:220px;">
+        <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;
+                    letter-spacing:.04em;">❌ Гірші магазини (макс. Fact)</div>
+        <div>{worst_pills or no_data}</div>
+    </div>
+</div>
+"""
 
     st.markdown(f"""
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;
