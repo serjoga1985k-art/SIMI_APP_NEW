@@ -337,7 +337,7 @@ def render_article_block(title, table_df, chart_title,
                     with cols[ci]:
                         if st.button(
                             label,
-                            key=f"slicer_{article_idx}_{chunk_idx}_{ci}_{tt_opt}",
+                            key=f"slicer_{article_idx}_{chunk_idx}_{ci}_{hash(str(tt_opt))}",
                             type=btn_type,
                             use_container_width=True,
                         ):
