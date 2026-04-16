@@ -967,7 +967,7 @@ div[data-testid="stButton"] > button:hover {
     st.subheader("📋 Зведена таблиця в розрізі ТТ")
 
     tt_pivot_metric = st.radio(
-        "Метрика (ТТ)", ["Fact", "Plan", "Delta (Fact-Plan)"], horizontal=True,
+        "Метрика (ТТ)", ["Fact", "Plan", "Delta (Average-Fact)"], horizontal=True,
         key="tt_pivot_metric"
     )
     tt_metric_col = col_map_d[tt_pivot_metric]
