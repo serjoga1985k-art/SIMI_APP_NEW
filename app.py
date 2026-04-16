@@ -939,7 +939,7 @@ div[data-testid="stButton"] > button:hover {
     col_map_d = {
     "Fact": "Fact",
     "Plan": "Plan",
-    "Delta (Average-Fact)": "Delta"
+    "Delta (Fact-Plan)": "Delta"
 }
     metric_col   = col_map_d[pivot_metric]
 
