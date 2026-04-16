@@ -308,6 +308,9 @@ def render_article_block(title, table_df, chart_title,
     )
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
+collapse_key = f"slicer_collapsed_{article_idx}"
+if collapse_key not in st.session_state:
+    st.session_state[collapse_key] = False  # False = відкритий
     # ═══════════════════════════════════════════════════════════════
     # TT SLICER — buttons below the chart
     # ═══════════════════════════════════════════════════════════════
