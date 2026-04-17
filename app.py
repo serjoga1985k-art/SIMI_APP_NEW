@@ -26,11 +26,10 @@ RED_LINE  = "#c0392b"
 YELLOW    = "#f0c000"
 GREEN_HDR = "#2e7d32"
 
-# Teal palette for % в ТО block
-TEAL      = "#0d7377"
+TEAL       = "#0d7377"
 TEAL_LIGHT = "#e0f4f4"
-TEAL_HDR  = "#085f63"
-ORANGE    = "#e67e22"
+TEAL_HDR   = "#085f63"
+ORANGE     = "#e67e22"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -167,7 +166,6 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
 
     has_plf = col_plf and col_plf in art_filt.columns
 
-    # ── Fact і Plan ───────────────────────────────────────────────
     if has_plf:
         fact_rows = art_filt[art_filt[col_plf] == "F"]
         plan_rows = art_filt[art_filt[col_plf] == "PL"]
@@ -180,9 +178,6 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
     plan = (plan_rows.groupby("_m")[col_ratio].mean()
             .reindex(range(1, 13), fill_value=np.nan).rename("Plan"))
 
-    # ── Average — точна копія логіки абсолюту ─────────────────────
-    # Крок 1: global_avg — mean(col_ratio) по group_factors + article
-    #         з повного df (всі ТТ), тільки факт
     f_src = art_all[art_all[col_plf] == "F"] if has_plf else art_all
 
     if group_factors:
@@ -192,14 +187,12 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
             .rename(columns={col_ratio: "Average_Calc"})
         )
     else:
-        # без group_factors — середнє per (ТТ, місяць), аналог абсолюту
         global_avg = (
             f_src.groupby([col_tt, "_m"], as_index=False)[col_ratio]
             .mean()
             .rename(columns={col_ratio: "Average_Calc"})
         )
 
-    # Крок 2: tt_table — факт per (ТТ + group_factors + місяць) з df_filtered
     tt_grp = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
     tt_table = (
         fact_rows.groupby(tt_grp, as_index=False)[col_ratio]
@@ -207,23 +200,20 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
         .rename(columns={col_ratio: "Fact_tt"})
     )
 
-    # Крок 3: приєднуємо global_avg до tt_table
     merge_cols = list(dict.fromkeys(group_factors + [col_article]))
     if group_factors:
         tt_table = pd.merge(tt_table, global_avg, on=merge_cols, how="left")
     else:
-        # без group_factors мерджимо по (col_tt, _m)
         tt_table = pd.merge(tt_table, global_avg, on=[col_tt, "_m"], how="left")
 
     tt_table["Fact_tt"]      = tt_table["Fact_tt"].fillna(0)
     tt_table["Average_Calc"] = tt_table["Average_Calc"].fillna(0)
     tt_table.loc[tt_table["Fact_tt"] == 0, "Average_Calc"] = 0
 
-    # Крок 4: фільтруємо по selected_tts, потім mean по місяцю
     tt_sel = tt_table[tt_table[col_tt].isin(selected_tts)].copy()
     dynamic_average = (
         tt_sel.groupby("_m")["Average_Calc"]
-        .mean()                                   # mean, бо % — не адитивний
+        .mean()
         .reindex(range(1, 13), fill_value=0)
         .rename("Average")
     )
@@ -238,8 +228,12 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
 
 
 def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
-                           col_ratio, col_plf, articles_to_show, mode):
+                           col_ratio, col_plf, articles_to_show, mode,
+                           group_factors=None):
     """Heatmap для % в ТО: зведена по ТТ x місяць."""
+    if group_factors is None:
+        group_factors = []
+
     df_num = df_filtered.copy()
     df_num[col_ratio] = pd.to_numeric(df_num[col_ratio], errors="coerce")
     df_num["_m"] = get_month_num(df_num[col_month])
@@ -253,7 +247,7 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
     else:
         data_heat = df_num[df_num[col_article].isin(articles_to_show)].copy()
 
-    # global avg per article x month
+    # global avg per article (+ group_factors if any) x month
     df_all_num = df.copy()
     df_all_num[col_ratio] = pd.to_numeric(df_all_num[col_ratio], errors="coerce")
     df_all_num["_m"] = get_month_num(df_all_num[col_month])
@@ -261,16 +255,37 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
         avg_src = df_all_num[df_all_num[col_plf] == "F"]
     else:
         avg_src = df_all_num
-    global_avg = (avg_src[avg_src[col_article].isin(articles_to_show)]
-                  .groupby([col_article, "_m"])[col_ratio]
-                  .mean().reset_index().rename(columns={col_ratio: "Average_Calc"}))
 
-    tt_table = (data_heat.groupby([col_tt, col_article, "_m"], as_index=False)[col_ratio]
-                .mean().rename(columns={col_ratio: "Fact"}))
-    tt_table = pd.merge(tt_table, global_avg, on=[col_article, "_m"], how="left")
+    art_filtered = avg_src[avg_src[col_article].isin(articles_to_show)]
+
+    # Build global_avg respecting group_factors
+    if group_factors:
+        grp_cols = list(dict.fromkeys(group_factors + [col_article, "_m"]))
+        global_avg = (
+            art_filtered
+            .groupby(grp_cols)[col_ratio]
+            .mean().reset_index()
+            .rename(columns={col_ratio: "Average_Calc"})
+        )
+        merge_on = list(dict.fromkeys(group_factors + [col_article, "_m"]))
+    else:
+        global_avg = (
+            art_filtered
+            .groupby([col_article, "_m"])[col_ratio]
+            .mean().reset_index()
+            .rename(columns={col_ratio: "Average_Calc"})
+        )
+        merge_on = [col_article, "_m"]
+
+    tt_grp = list(dict.fromkeys([col_tt] + group_factors + [col_article, "_m"]))
+    tt_table = (
+        data_heat.groupby(tt_grp, as_index=False)[col_ratio]
+        .mean().rename(columns={col_ratio: "Fact"})
+    )
+    tt_table = pd.merge(tt_table, global_avg, on=merge_on, how="left")
     tt_table["Delta"]   = tt_table["Fact"] - tt_table["Average_Calc"]
     tt_table["Delta_%"] = tt_table["Delta"] / tt_table["Average_Calc"].replace(0, np.nan)
-    tt_table["Std"]     = np.nan  # placeholder for Z
+    tt_table["Std"]     = np.nan
     tt_table["Z"]       = np.nan
 
     val_col = {
@@ -642,11 +657,15 @@ def render_ratio_article_block(title, table_df,
                                 df=None, df_filtered=None,
                                 col_tt=None, col_article=None,
                                 col_month=None, col_ratio=None, col_plf=None,
-                                tt_val=None, article_idx=0):
+                                tt_val=None, article_idx=0,
+                                group_factors=None):   # ← FIX: added group_factors param
     """
     Відображає блок аналізу для % в ТО (ratio column).
     Значення відображаються у відсотках з двома знаками.
     """
+    if group_factors is None:
+        group_factors = []
+
     rows = {
         "План %":   ("Plan",    "#e8f8f8", TEAL_HDR),
         "Факт %":   ("Fact",    "#d0f0f0", TEAL),
@@ -666,11 +685,15 @@ def render_ratio_article_block(title, table_df,
 
     active_tt = st.session_state[skey]
 
+    # ── FIX: correctly filter df_filtered for single TT, pass full df as df_all ──
     if active_tt != "__ALL__" and df is not None and df_filtered is not None:
         df_filt_tt = df_filtered[df_filtered[col_tt] == active_tt].copy()
         display_df = build_ratio_monthly(
-            df_filt_tt, col_tt, col_article, col_month,
-            col_ratio, col_plf, title, [active_tt], df_all=df, group_factors=group_factors
+            df_filt_tt,           # filtered to single TT
+            col_tt, col_article, col_month,
+            col_ratio, col_plf, title, [active_tt],
+            df_all=df,            # full df for global average
+            group_factors=group_factors,
         )
     else:
         display_df = table_df
@@ -685,7 +708,6 @@ def render_ratio_article_block(title, table_df,
     </div>
     """, unsafe_allow_html=True)
 
-    # Format as percent with 2 decimals
     def fmt_pct(v):
         return f"{v:.2f}%"
 
@@ -700,7 +722,6 @@ def render_ratio_article_block(title, table_df,
     """
     for label, (col, bg, color) in rows.items():
         vals  = [display_df.loc[m, col] for m in range(1, 13)]
-        # For ratio: average of non-zero values as summary
         non_zero = [v for v in vals if v != 0]
         summary = np.mean(non_zero) if non_zero else 0.0
         html += f'<tr style="background:{bg};">'
@@ -712,7 +733,6 @@ def render_ratio_article_block(title, table_df,
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
-    # Metrics
     facts          = [display_df.loc[m, "Fact"] for m in range(1, 13)]
     non_zero_facts = [f for f in facts if f != 0]
     avg_monthly    = np.mean(non_zero_facts) if non_zero_facts else 0.0
@@ -723,7 +743,6 @@ def render_ratio_article_block(title, table_df,
 
     delta_color = RED_LINE if total_delta > 0 else GREEN_HDR
 
-    # Best/worst TT pills
     best_pills = worst_pills = ""
     if df_filtered is not None and col_tt and active_tt == "__ALL__":
         sub = df_filtered[df_filtered[col_article] == title].copy()
@@ -792,7 +811,6 @@ def render_ratio_article_block(title, table_df,
     """
     st.markdown(metrics_html, unsafe_allow_html=True)
 
-    # Chart
     x_axis = [MONTH_LABELS[m] for m in range(1, 13)]
     fig = go.Figure()
     fig.add_trace(go.Bar(x=x_axis, y=display_df["Plan"],
@@ -817,7 +835,6 @@ def render_ratio_article_block(title, table_df,
     st.plotly_chart(fig, use_container_width=True,
                     key=f"ratio_chart_{article_idx}_{active_tt}")
 
-    # TT Slicer
     if df_filtered is not None and col_tt is not None:
         available_tts = sorted(
             df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(),
@@ -889,11 +906,16 @@ def render_ratio_article_block(title, table_df,
 
 def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
                                   col_month, col_ratio, col_plf,
-                                  articles_to_show, ratio_mode):
+                                  articles_to_show, ratio_mode,
+                                  group_factors=None):   # ← FIX: added group_factors param
     """Відображає heatmap аномалій та TOP/ANTITOP для % в ТО."""
+    if group_factors is None:
+        group_factors = []
+
     heat, tt_table, val_col = build_ratio_heat_data(
         df, df_filtered, col_tt, col_article, col_month,
-        col_ratio, col_plf, articles_to_show, ratio_mode
+        col_ratio, col_plf, articles_to_show, ratio_mode,
+        group_factors=group_factors,   # ← FIX: pass group_factors through
     )
 
     st.markdown(f"""
@@ -965,7 +987,6 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
 
     NUM_FMT = '# ##0;-# ##0;-'
     PCT_FMT = '+0.0%;-0.0%;-'
-    RATIO_FMT = '0.00"%"'
 
     def hdr_fill(h):
         h = h.lstrip("#")
@@ -1133,7 +1154,6 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 col_ratio, col_plf, article, tt_val, df_all=df, group_factors=group_factors
             )
             base_row = 2 + art_ri * 5
-            # Article title row
             ws_ratio.merge_cells(start_row=base_row, start_column=1,
                                   end_row=base_row, end_column=len(r_header))
             tc = ws_ratio.cell(row=base_row, column=1, value=article)
@@ -1441,10 +1461,8 @@ def main():
             col_article = st.selectbox("Стаття бюджету", cols)
         with c4:
             col_level0 = st.selectbox("Level_0", cols)
-            # ── NEW: % в ТО column ──────────────────────────────
             ratio_candidates = ["— не обрано —"] + cols
             default_ratio_idx = 0
-            # Try to auto-detect by name
             for i, c in enumerate(cols):
                 if "%" in c and "то" in c.lower():
                     default_ratio_idx = i + 1
@@ -1521,7 +1539,6 @@ def main():
                 if extra_val3:
                     extra_filters[extra_col3] = extra_val3
 
-    # Dynamic TT list
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🏪 ТТ за поточними фільтрами")
 
@@ -1575,7 +1592,6 @@ def main():
         default=[col_tt] if col_tt in df.columns else [],
     )
 
-    # ── Toggle: show % в ТО section ─────────────────────────────
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 👁️ Відображення")
     show_ratio_section = st.sidebar.checkbox(
@@ -1669,7 +1685,6 @@ def main():
         st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
 
         if col_ratio and show_ratio_section:
-            # ── Two-column layout: main | ratio ──────────────────
             col_main, col_rat = st.columns([1, 1], gap="medium")
 
             with col_main:
@@ -1690,7 +1705,8 @@ def main():
             with col_rat:
                 rdf = build_ratio_monthly(
                     df_filtered, col_tt, col_article, col_month,
-                    col_ratio, col_plf, article, tt_val, df_all=df, group_factors=group_factors
+                    col_ratio, col_plf, article, tt_val,
+                    df_all=df, group_factors=group_factors
                 )
                 render_ratio_article_block(
                     title=article, table_df=rdf,
@@ -1698,9 +1714,9 @@ def main():
                     col_tt=col_tt, col_article=col_article,
                     col_month=col_month, col_ratio=col_ratio, col_plf=col_plf,
                     tt_val=tt_val, article_idx=art_idx,
+                    group_factors=group_factors,    # ← FIX: pass group_factors
                 )
         else:
-            # ── Single column layout (ratio hidden) ──────────────
             tdf = build_article_monthly(
                 df, df_filtered, col_tt, col_article,
                 col_month, col_value, col_plf, article, tt_val, group_factors
@@ -1760,7 +1776,8 @@ def main():
         for article in articles_to_show:
             rdf = build_ratio_monthly(
                 df_filtered, col_tt, col_article, col_month,
-                col_ratio, col_plf, article, tt_val, df_all=df, group_factors=group_factors
+                col_ratio, col_plf, article, tt_val,
+                df_all=df, group_factors=group_factors
             )
             row = {"Стаття": article}
             vals_m = [rdf.loc[m, ratio_pivot_metric] for m in range(1, 13)]
@@ -1951,7 +1968,8 @@ def main():
         st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
         render_ratio_heatmap_section(
             df, df_filtered, col_tt, col_article, col_month,
-            col_ratio, col_plf, articles_to_show, ratio_mode
+            col_ratio, col_plf, articles_to_show, ratio_mode,
+            group_factors=group_factors,    # ← FIX: pass group_factors
         )
 
     # ═══ EXPORT ═══════════════════════════════════════════════════
