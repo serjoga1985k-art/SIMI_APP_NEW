@@ -143,17 +143,17 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
 
 def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
                         col_ratio, col_plf, selected_art, selected_tts,
-                        df_all=None):
-    """
-    Будує місячну таблицю для колонки-відсотку (col_ratio).
-    Логіка:
-      - Fact  = середнє col_ratio по місяцю (факт, рядки F)
-      - Plan  = середнє col_ratio по місяцю (план, рядки PL) — якщо є
-      - Average = глобальне середнє col_ratio по всіх ТТ для цієї статті
-      - Delta = Fact - Average
-    """
+                        df_all=None, group_factors=None):
+    if group_factors is None:
+        group_factors = []
+
+    art_all  = (df_all if df_all is not None else df_filtered).copy()
+    art_all  = art_all[art_all[col_article] == selected_art].copy()
     art_filt = df_filtered[df_filtered[col_article] == selected_art].copy()
+
+    art_all["_m"]  = get_month_num(art_all[col_month])
     art_filt["_m"] = get_month_num(art_filt[col_month])
+    art_all[col_ratio]  = pd.to_numeric(art_all[col_ratio],  errors="coerce")
     art_filt[col_ratio] = pd.to_numeric(art_filt[col_ratio], errors="coerce")
 
     if art_filt.empty:
@@ -167,6 +167,7 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
 
     has_plf = col_plf and col_plf in art_filt.columns
 
+    # ── Fact і Plan ───────────────────────────────────────────────
     if has_plf:
         fact_rows = art_filt[art_filt[col_plf] == "F"]
         plan_rows = art_filt[art_filt[col_plf] == "PL"]
@@ -179,24 +180,58 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
     plan = (plan_rows.groupby("_m")[col_ratio].mean()
             .reindex(range(1, 13), fill_value=np.nan).rename("Plan"))
 
-    # Global average across all TTs (unfiltered by tt_val)
-    if df_all is not None:
-        art_all = df_all[df_all[col_article] == selected_art].copy()
-        art_all["_m"] = get_month_num(art_all[col_month])
-        art_all[col_ratio] = pd.to_numeric(art_all[col_ratio], errors="coerce")
-        if has_plf:
-            avg_src = art_all[art_all[col_plf] == "F"]
-        else:
-            avg_src = art_all
-        global_avg = avg_src.groupby("_m")[col_ratio].mean().reindex(range(1, 13), fill_value=np.nan)
+    # ── Average — точна копія логіки абсолюту ─────────────────────
+    # Крок 1: global_avg — mean(col_ratio) по group_factors + article
+    #         з повного df (всі ТТ), тільки факт
+    f_src = art_all[art_all[col_plf] == "F"] if has_plf else art_all
+
+    if group_factors:
+        global_avg = (
+            f_src.groupby(group_factors + [col_article], as_index=False)[col_ratio]
+            .mean()
+            .rename(columns={col_ratio: "Average_Calc"})
+        )
     else:
-        global_avg = fact
+        # без group_factors — середнє per (ТТ, місяць), аналог абсолюту
+        global_avg = (
+            f_src.groupby([col_tt, "_m"], as_index=False)[col_ratio]
+            .mean()
+            .rename(columns={col_ratio: "Average_Calc"})
+        )
 
-    average = global_avg.rename("Average")
+    # Крок 2: tt_table — факт per (ТТ + group_factors + місяць) з df_filtered
+    tt_grp = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
+    tt_table = (
+        fact_rows.groupby(tt_grp, as_index=False)[col_ratio]
+        .mean()
+        .rename(columns={col_ratio: "Fact_tt"})
+    )
 
-    merged = pd.DataFrame(index=range(1, 13)).join(plan).join(fact).join(average)
+    # Крок 3: приєднуємо global_avg до tt_table
+    merge_cols = list(dict.fromkeys(group_factors + [col_article]))
+    if group_factors:
+        tt_table = pd.merge(tt_table, global_avg, on=merge_cols, how="left")
+    else:
+        # без group_factors мерджимо по (col_tt, _m)
+        tt_table = pd.merge(tt_table, global_avg, on=[col_tt, "_m"], how="left")
+
+    tt_table["Fact_tt"]      = tt_table["Fact_tt"].fillna(0)
+    tt_table["Average_Calc"] = tt_table["Average_Calc"].fillna(0)
+    tt_table.loc[tt_table["Fact_tt"] == 0, "Average_Calc"] = 0
+
+    # Крок 4: фільтруємо по selected_tts, потім mean по місяцю
+    tt_sel = tt_table[tt_table[col_tt].isin(selected_tts)].copy()
+    dynamic_average = (
+        tt_sel.groupby("_m")["Average_Calc"]
+        .mean()                                   # mean, бо % — не адитивний
+        .reindex(range(1, 13), fill_value=0)
+        .rename("Average")
+    )
+
+    merged = pd.DataFrame(index=range(1, 13)).join(plan).join(fact).join(dynamic_average)
     merged = merged.fillna(0.0)
     merged.index.name = "month"
+    merged.loc[merged["Fact"] == 0, "Average"] = 0
     merged["Delta"] = merged["Fact"] - merged["Average"]
 
     return merged
@@ -635,7 +670,7 @@ def render_ratio_article_block(title, table_df,
         df_filt_tt = df_filtered[df_filtered[col_tt] == active_tt].copy()
         display_df = build_ratio_monthly(
             df_filt_tt, col_tt, col_article, col_month,
-            col_ratio, col_plf, title, [active_tt], df_all=df
+            col_ratio, col_plf, title, [active_tt], df_all=df, group_factors=group_factors
         )
     else:
         display_df = table_df
@@ -1095,7 +1130,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         for art_ri, article in enumerate(articles_to_show):
             rdf = build_ratio_monthly(
                 df_filtered, col_tt, col_article, col_month,
-                col_ratio, col_plf, article, tt_val, df_all=df
+                col_ratio, col_plf, article, tt_val, df_all=df, group_factors=group_factors
             )
             base_row = 2 + art_ri * 5
             # Article title row
@@ -1655,7 +1690,7 @@ def main():
             with col_rat:
                 rdf = build_ratio_monthly(
                     df_filtered, col_tt, col_article, col_month,
-                    col_ratio, col_plf, article, tt_val, df_all=df
+                    col_ratio, col_plf, article, tt_val, df_all=df, group_factors=group_factors
                 )
                 render_ratio_article_block(
                     title=article, table_df=rdf,
@@ -1725,7 +1760,7 @@ def main():
         for article in articles_to_show:
             rdf = build_ratio_monthly(
                 df_filtered, col_tt, col_article, col_month,
-                col_ratio, col_plf, article, tt_val, df_all=df
+                col_ratio, col_plf, article, tt_val, df_all=df, group_factors=group_factors
             )
             row = {"Стаття": article}
             vals_m = [rdf.loc[m, ratio_pivot_metric] for m in range(1, 13)]
