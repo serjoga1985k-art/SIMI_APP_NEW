@@ -1295,11 +1295,16 @@ def main():
     st.sidebar.markdown("---")
     mode       = st.sidebar.selectbox("Mode (Heatmap)",       ["Delta", "Delta %", "Z-score", "Fact", "Average"])
     ratio_mode = st.sidebar.selectbox("Mode (% в ТО Heatmap)", ["Delta", "Delta %", "Fact", "Average"], key="ratio_mode")
+    
+    options = [c for c in df.columns if c not in [col_value, col_plf, col_article]]
+
     group_factors = st.sidebar.multiselect(
-        "Фактори групування (Average/Std)",
-        options=[c for c in df.columns if c not in [col_value, col_plf, col_article]],
-        default=[col_tt] if col_tt in df.columns else [],
+    "Фактори групування (Average/Std)",
+    options=options,
+    default=[col_tt] if col_tt in options else [],   # перевірка, чи є col_tt серед options
+    placeholder="Оберіть стовпці"
     )
+
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 👁️ Відображення")
