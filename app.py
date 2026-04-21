@@ -541,11 +541,11 @@ def render_article_block(title, table_df, df, df_filtered,
 
     best_block = f"""
       <div style="flex:1;min-width:220px;">
-        <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;">✅ Кращі магазини (мін. Fact)</div>
+        <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;">✅ Найекономніші магазини (мін. Fact)</div>
         <div>{best_pills or '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
       </div>
       <div style="flex:1;min-width:220px;">
-        <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;">❌ Гірші магазини (макс. Fact)</div>
+        <div style="color:#888;font-size:0.71rem;margin-bottom:4px;text-transform:uppercase;">❌ Найбільш витратні магазини (макс. Fact)</div>
         <div>{worst_pills or '<span style="color:#aaa;font-size:0.75rem;">немає даних</span>'}</div>
       </div>""" if active_tt == "__ALL__" else ""
 
