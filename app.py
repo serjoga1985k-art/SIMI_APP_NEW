@@ -158,21 +158,21 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
 def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
                          col_ratio, col_plf, selected_art, selected_tts,
                          df_all=None, group_factors=None):
-    """
-    Ratio (% в ТО) monthly table: Plan / Fact / Average / Delta.
-    Average is computed EXACTLY like absolute Average:
-      - group by (group_factors + article) on full dataset → mean per TT
-      - sum selected TTs per month
-    """
     if group_factors is None:
         group_factors = []
 
-    src_all  = (df_all if df_all is not None else df_filtered)
-    art_all  = _prep(src_all[src_all[col_article] == selected_art].copy(), col_month)
-    art_filt = _prep(df_filtered[df_filtered[col_article] == selected_art].copy(), col_month)
+    # Назва колонки зі значенням (гроші)
+    col_value_abs = "Значение" 
+    # Назва статті, яка є знаменником (ТО)
+    to_article_name = "ТО без ПДВ та без акцизу"
 
-    for d in (art_all, art_filt):
-        d[col_ratio] = pd.to_numeric(d[col_ratio], errors="coerce")
+    src_all  = (df_all if df_all is not None else df_filtered)
+    
+    # Готуємо дані по цільовій статті
+    art_filt = _prep(df_filtered[df_filtered[col_article] == selected_art].copy(), col_month)
+    
+    # !!! КЛЮЧОВА ЗМІНА: Готуємо дані по ТО окремо з усього фільтрованого масиву
+    to_filt = _prep(df_filtered[df_filtered[col_article] == to_article_name].copy(), col_month)
 
     if art_filt.empty:
         return pd.DataFrame(0.0, index=range(1, 13), columns=["Plan", "Fact", "Average", "Delta"])
@@ -180,31 +180,59 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
     if not selected_tts:
         selected_tts = art_filt[col_tt].dropna().unique().tolist()
 
-    fact_src = _fact_rows(art_filt, col_plf)
-    plan_src = _plan_rows(art_filt, col_plf)
+    def calc_ratio_series(data_art, data_to):
+        """Розрахунок %: (Сума статті / Сума ТО) * 100"""
+        s_art = data_art.groupby("_m")[col_value_abs].sum()
+        s_to  = data_to.groupby("_m")[col_value_abs].sum()
+        
+        # Об'єднуємо по місяцях, щоб ділити відповідні значення
+        combined = pd.concat([s_art, s_to], axis=1, keys=['art', 'to'])
+        ratio = (combined['art'] / combined['to'].replace(0, np.nan)) * 100
+        return ratio.reindex(range(1, 13), fill_value=0)
 
-    fact = (fact_src.groupby("_m")[col_ratio].mean()
-            .reindex(range(1, 13), fill_value=np.nan).rename("Fact"))
-    plan = (plan_src.groupby("_m")[col_ratio].mean()
-            .reindex(range(1, 13), fill_value=np.nan).rename("Plan"))
+    # Розділяємо План та Факт для статті та для ТО
+    fact_art = _fact_rows(art_filt, col_plf)
+    plan_art = _plan_rows(art_filt, col_plf)
+    
+    fact_to = _fact_rows(to_filt, col_plf)
+    plan_to = _plan_rows(to_filt, col_plf)
 
-    # ── Average: same logic as absolute ──────────────────────────────────────
-    all_fact = _fact_rows(art_all, col_plf)
-    global_avg = _build_global_avg(all_fact, col_ratio, col_article, col_tt,
+    fact = calc_ratio_series(fact_art, fact_to).rename("Fact")
+    plan = calc_ratio_series(plan_art, plan_to).rename("Plan")
+
+    # ── Average (Норматив) ───────────────────────────────────────────────────
+    # Для розрахунку норми нам все ще потрібен % у кожному рядку вихідного df
+    art_all_raw = src_all[src_all[col_article] == selected_art].copy()
+    to_all_raw  = src_all[src_all[col_article] == to_article_name].copy()
+    
+    # Створюємо мапу ТО: (ТТ, Місяць, План/Факт) -> Значення ТО
+    to_map = to_all_raw.set_index([col_tt, col_month, col_plf])[col_value_abs].to_dict()
+    
+    def get_to_val(row):
+        return to_map.get((row[col_tt], row[col_month], row[col_plf]), np.nan)
+
+    art_all_raw["_to_val"] = art_all_raw.apply(get_to_val, axis=1)
+    art_all_raw["_calc_pct"] = (art_all_raw[col_value_abs] / art_all_raw["_to_val"].replace(0, np.nan)) * 100
+    
+    all_fact = _prep(_fact_rows(art_all_raw, col_plf), col_month)
+    global_avg = _build_global_avg(all_fact, "_calc_pct", col_article, col_tt,
                                     group_factors, agg_fn="mean")
 
+    # Для ТТ-таблиці (динамічний Average)
     tt_grp = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
-    tt_table = (
-        fact_src.groupby(tt_grp, as_index=False)[col_ratio]
-        .mean()
-        .rename(columns={col_ratio: "Fact_tt"})
-    )
+    tt_sums_art = fact_art.groupby(tt_grp, as_index=False)[col_value_abs].sum()
+    
+    # Додаємо суму ТО для кожного ТТ/місяця в таблицю порівняння
+    tt_sums_to = fact_to.groupby([col_tt, "_m"], as_index=False)[col_value_abs].sum().rename(columns={col_value_abs: "_to_sum"})
+    tt_table = pd.merge(tt_sums_art, tt_sums_to, on=[col_tt, "_m"], how="left")
+    
+    tt_table["Fact_tt"] = (tt_table[col_value_abs] / tt_table["_to_sum"].replace(0, np.nan)) * 100
     tt_table = _merge_avg(tt_table, global_avg, group_factors, col_article, col_tt)
-    tt_table["Fact_tt"]      = tt_table["Fact_tt"].fillna(0)
+    
+    tt_table["Fact_tt"] = tt_table["Fact_tt"].fillna(0)
     tt_table["Average_Calc"] = tt_table["Average_Calc"].fillna(0)
     tt_table.loc[tt_table["Fact_tt"] == 0, "Average_Calc"] = 0
 
-    # For ratio: use mean (not sum) when aggregating selected TTs
     dynamic_average = (
         tt_table[tt_table[col_tt].isin(selected_tts)]
         .groupby("_m")["Average_Calc"].mean()
@@ -212,9 +240,7 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
         .rename("Average")
     )
 
-    merged = (pd.DataFrame(index=range(1, 13))
-              .join(plan).join(fact).join(dynamic_average)
-              .fillna(0.0))
+    merged = pd.DataFrame(index=range(1, 13)).join(plan).join(fact).join(dynamic_average).fillna(0.0)
     merged.index.name = "month"
     merged.loc[merged["Fact"] == 0, "Average"] = 0
     merged["Delta"] = merged["Fact"] - merged["Average"]
