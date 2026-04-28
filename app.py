@@ -191,6 +191,23 @@ def _plan_rows(df, col_plf):
     return pd.DataFrame(columns=df.columns)
 
 
+def _make_combo_col(df, factors):
+    """Safely build a combined-factor text column for pandas/Python versions used on Streamlit Cloud."""
+    valid_factors = [f for f in factors if f in df.columns]
+
+    if not valid_factors:
+        return pd.Series("", index=df.index), []
+
+    def make_combo(row):
+        vals = []
+        for v in row:
+            if pd.notna(v) and str(v).strip() != "":
+                vals.append(str(v).strip())
+        return " | ".join(vals)
+
+    return df[valid_factors].apply(make_combo, axis=1), valid_factors
+
+
 # ── Core calculation: build global average respecting group_factors ───────────
 def _build_global_avg(df_all_fact, col_value, col_article, col_tt,
                       group_factors, agg_fn="mean"):
@@ -509,7 +526,11 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
 
     combo_col = "Комбінація факторів"
 
-    all_fact[combo_col] = all_fact[selected_factors].astype(str).agg(" | ".join, axis=1)
+    all_fact[combo_col], valid_selected_factors = _make_combo_col(all_fact, selected_factors)
+
+    if not valid_selected_factors:
+        st.warning("Вибрані фактори відсутні в даних.")
+        return
 
     combo_impact = (
         all_fact
@@ -718,7 +739,11 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
 
     combo_col = "Комбінація факторів"
 
-    all_fact[combo_col] = all_fact[selected_factors].astype(str).agg(" | ".join, axis=1)
+    all_fact[combo_col], valid_selected_factors = _make_combo_col(all_fact, selected_factors)
+
+    if not valid_selected_factors:
+        st.warning("Вибрані фактори відсутні в даних.")
+        return
 
     combo_impact = (
         all_fact
@@ -1205,7 +1230,10 @@ def analyze_combination_statistical_impact(df, col_article, col_value, col_plf,
     art_df = art_df.dropna(subset=[col_value])
 
     combo_col = "Комбінація факторів"
-    art_df[combo_col] = art_df[selected_factors].astype(str).agg(" | ".join, axis=1)
+    art_df[combo_col], valid_selected_factors = _make_combo_col(art_df, selected_factors)
+
+    if not valid_selected_factors:
+        return pd.DataFrame(), pd.DataFrame()
 
     row, detail = _factor_stat_models(art_df, combo_col, col_value)
     if row is None:
@@ -2536,7 +2564,9 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             all_fact = _fact_rows(art_all, col_plf).copy()
             if selected_factors and not all_fact.empty:
                 all_fact[col_value] = pd.to_numeric(all_fact[col_value], errors="coerce")
-                all_fact[combo_col] = all_fact[selected_factors].astype(str).agg(" | ".join, axis=1)
+                all_fact[combo_col], valid_selected_factors = _make_combo_col(all_fact, selected_factors)
+                if not valid_selected_factors:
+                    continue
                 combo_impact = all_fact.groupby([combo_col, "_m"], as_index=False)[col_value].agg(
                     Середнє="mean", Кількість="count", Сума="sum", Відхилення="std"
                 )
@@ -2549,7 +2579,9 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 all_fact_r = _fact_rows(art_all_r, col_plf).copy()
                 if not all_fact_r.empty and col_ratio in all_fact_r.columns:
                     all_fact_r[col_ratio] = pd.to_numeric(all_fact_r[col_ratio], errors="coerce")
-                    all_fact_r[combo_col] = all_fact_r[selected_factors].astype(str).agg(" | ".join, axis=1)
+                    all_fact_r[combo_col], valid_selected_factors = _make_combo_col(all_fact_r, selected_factors)
+                    if not valid_selected_factors:
+                        continue
                     combo_r = all_fact_r.groupby([combo_col, "_m"], as_index=False)[col_ratio].agg(
                         Середнє="mean", Кількість="count", Сума="sum", Відхилення="std"
                     )
