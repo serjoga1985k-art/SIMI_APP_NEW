@@ -50,6 +50,130 @@ def load_excel(file_bytes, file_name, sheet_name):
     return df
 
 
+
+
+def _norm_col_name(name):
+    return str(name).strip().lower().replace("_", " ").replace("-", " ")
+
+
+def _find_col_by_keywords(cols, exact=None, contains=None, all_contains=None):
+    """Find best matching column: exact first, then contains, then all words."""
+    exact = exact or []
+    contains = contains or []
+    all_contains = all_contains or []
+    norm_map = {c: _norm_col_name(c) for c in cols}
+
+    for wanted in exact:
+        wanted_norm = _norm_col_name(wanted)
+        for c, n in norm_map.items():
+            if n == wanted_norm:
+                return c
+
+    for key in contains:
+        key_norm = _norm_col_name(key)
+        for c, n in norm_map.items():
+            if key_norm in n:
+                return c
+
+    for keys in all_contains:
+        keys_norm = [_norm_col_name(k) for k in keys]
+        for c, n in norm_map.items():
+            if all(k in n for k in keys_norm):
+                return c
+
+    return None
+
+
+def auto_map_columns(df):
+    """Automatic default column mapping. User can still change every selectbox manually."""
+    cols = df.columns.tolist()
+
+    return {
+        "col_tt": _find_col_by_keywords(
+            cols,
+            exact=["TT", "ТТ", "Магазин", "TT (Магазин)"],
+            contains=["тт", "магазин", "store", "shop"]
+        ),
+        "col_month": _find_col_by_keywords(
+            cols,
+            exact=["Місяць", "Месяц", "Month"],
+            contains=["місяц", "месяц", "month"]
+        ),
+        "col_plf": _find_col_by_keywords(
+            cols,
+            exact=["PL/F", "PL / F", "PLF", "План/Факт"],
+            contains=["pl/f", "pl / f", "plf", "план", "факт"]
+        ),
+        "col_level0": _find_col_by_keywords(
+            cols,
+            exact=["Level_0", "Level 0"],
+            contains=["level 0", "level_0", "level"]
+        ),
+        "col_year": _find_col_by_keywords(
+            cols,
+            exact=["Рік місяця", "Рік", "Year"],
+            contains=["рік місяця", "year", "рік", "год"]
+        ),
+        "col_value": _find_col_by_keywords(
+            cols,
+            exact=["Значение", "Значення", "Value", "Amount"],
+            contains=["знач", "value", "amount", "сума"]
+        ),
+        "col_article": _find_col_by_keywords(
+            cols,
+            exact=["Стаття бюджету", "Статья бюджета", "Article"],
+            contains=["стаття бюджету", "статья бюджета", "стаття", "article", "budget"]
+        ),
+        "col_ratio": _find_col_by_keywords(
+            cols,
+            exact=["% в ТО без акцизу та без ПДВ", "% в ТО без акциза и без НДС"],
+            all_contains=[["%", "то"], ["ratio"]],
+            contains=["% в то", "відсот", "процент"]
+        ),
+        # Назва, яку показуємо в шапці магазину замість ТТ, коли вибраний 1 магазин.
+        "col_division": _find_col_by_keywords(
+            cols,
+            exact=["Підрозділ", "Подразделение", "Division"],
+            contains=["підрозділ", "подраздел", "division"]
+        ),
+        "col_city": _find_col_by_keywords(cols, exact=["Місто", "Город", "City"], contains=["місто", "город", "city"]),
+        "col_area": _find_col_by_keywords(cols, exact=["Площа", "Площадь", "Area"], contains=["площа", "площад", "area"]),
+        "col_format": _find_col_by_keywords(cols, exact=["Формат ТО", "Формат"], contains=["формат то", "формат", "format"]),
+        "col_format2": _find_col_by_keywords(cols, exact=["Формат2", "Формат 2", "Format2", "Format 2"], contains=["формат2", "формат 2", "format2", "format 2"]),
+        "col_mega": _find_col_by_keywords(cols, exact=["Мегасегмент"], contains=["мегасегмент", "mega"]),
+        "col_rik": _find_col_by_keywords(cols, exact=["Рік відкриття", "Год открытия"], contains=["рік відкрит", "год открыт", "year open"]),
+        "col_mis": _find_col_by_keywords(cols, exact=["Місяць відкриття", "Месяц открытия"], contains=["місяць відкрит", "месяц открыт", "month open"]),
+    }
+
+
+def _init_column_state(df, file_name, sheet_name):
+    """Initialize defaults once per file/sheet; manual user choice remains available."""
+    cols = df.columns.tolist()
+    signature = f"{file_name}::{sheet_name}::{len(cols)}::{','.join(map(str, cols))}"
+    if st.session_state.get("_column_mapping_signature") != signature:
+        st.session_state["_column_mapping_signature"] = signature
+        auto_cols = auto_map_columns(df)
+        for key, val in auto_cols.items():
+            if val in cols:
+                st.session_state[key] = val
+            elif key not in st.session_state:
+                st.session_state[key] = None
+
+
+def _select_col(label, cols, state_key, allow_empty=False, help=None):
+    options = (["—"] + cols) if allow_empty else cols
+    current = st.session_state.get(state_key)
+    if allow_empty:
+        default_value = current if current in cols else "—"
+    else:
+        default_value = current if current in cols else (cols[0] if cols else None)
+    index = options.index(default_value) if default_value in options else 0
+    selected = st.selectbox(label, options, index=index, key=f"select_{state_key}", help=help)
+    value = None if selected == "—" else selected
+    st.session_state[state_key] = value
+    return value
+
+
 def _prep(df, col_month):
     """Add _m column in-place."""
     out = df.copy()
@@ -68,22 +192,11 @@ def _plan_rows(df, col_plf):
 
 
 # ── Core calculation: build global average respecting group_factors ───────────
-#
-# LOGIC (identical for both absolute and ratio columns):
-#   1. From the FULL dataset (all TTs), compute per-TT average over
-#      (group_factors + article) grouping — same as absolute Average.
-#   2. Sum (absolute) or mean (ratio) those per-TT values for the selected TTs
-#      to get the "dynamic average" series across months.
-#
-# This mirrors exactly how build_article_monthly computes Average.
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _build_global_avg(df_all_fact, col_value, col_article, col_tt,
                       group_factors, agg_fn="mean"):
     """
     Compute global average per (group_factors + article) from the full fact dataset.
-    agg_fn: 'mean' for ratio, 'mean' for absolute (both use mean at TT level).
-    Returns DataFrame with Average_Calc column.
+    Always uses the FULL dataset (df) so extra filters don't distort the norm.
     """
     if group_factors:
         grp = list(dict.fromkeys(group_factors + [col_article]))
@@ -106,10 +219,17 @@ def _merge_avg(tt_table, global_avg, group_factors, col_article, col_tt):
     return pd.merge(tt_table, global_avg, on=on, how="left")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# FIX: build_article_monthly — Average завжди береться з ПОВНОГО df (df_base),
+#      тільки Plan/Fact беруться з df_filtered.
+#      tt_table для динамічного Average також будується з df_filtered,
+#      але Average_Calc підтягується з global_avg (повний df) через merge.
+# ═══════════════════════════════════════════════════════════════════════════════
 def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
                            col_value, col_plf, selected_art, selected_tts, group_factors):
     """Absolute value monthly table: Plan / Fact / Average / Delta."""
-    art_all  = _prep(df[df[col_article] == selected_art], col_month)
+
+    # --- Plan & Fact: з ВІДФІЛЬТРОВАНОГО датасету ---
     art_filt = _prep(df_filtered[df_filtered[col_article] == selected_art], col_month)
 
     if art_filt.empty:
@@ -125,10 +245,12 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
             .groupby("_m")[col_value].sum()
             .reindex(range(1, 13), fill_value=0).rename("Fact"))
 
-    # Global average from full dataset
+    # --- Average (норматив): ЗАВЖДИ з ПОВНОГО df, щоб фільтри не спотворювали норму ---
+    art_all  = _prep(df[df[col_article] == selected_art], col_month)
     all_fact = _fact_rows(art_all, col_plf)
     global_avg = _build_global_avg(all_fact, col_value, col_article, col_tt, group_factors)
 
+    # tt_table будується з df_filtered (які ТТ активні), але Average_Calc — з global_avg (повний df)
     tt_grp = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
     tt_table = (
         _fact_rows(art_filt, col_plf)
@@ -155,24 +277,34 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
     return merged
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# FIX: build_ratio_monthly — Average (норматив %) також береться з ПОВНОГО df.
+#      ТО для знаменника у Plan/Fact береться з df_filtered (коректна поведінка),
+#      а from-scratch global_avg для норми — з df (без зайвих фільтрів).
+# ═══════════════════════════════════════════════════════════════════════════════
 def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
                          col_ratio, col_plf, selected_art, selected_tts,
                          df_all=None, group_factors=None):
     """
-    Ratio (% в ТО) monthly table: Plan / Fact / Average / Delta.
-    Average is computed EXACTLY like absolute Average:
-      - group by (group_factors + article) on full dataset → mean per TT
-      - sum selected TTs per month
+    Relative monthly table: Plan / Fact / Average / Delta for "% в ТО".
+
+    ВИПРАВЛЕННЯ:
+    1) Якщо вибраний рівно 1 ТТ і підключені фактори групування,
+       Average % береться як середнє зі стовпця Excel col_ratio
+       по групі факторів цього ТТ, а не через Average_abs / Average_TO.
+    2) Average % більше НЕ обнуляється, коли Fact == 0.
+       Інакше норматив пропадав у місяцях без факту по вибраному ТТ.
+    3) План/Факт % і далі рахуються через Значение / ТО без ПДВ та без акцизу.
     """
     if group_factors is None:
         group_factors = []
 
-    src_all  = (df_all if df_all is not None else df_filtered)
-    art_all  = _prep(src_all[src_all[col_article] == selected_art].copy(), col_month)
-    art_filt = _prep(df_filtered[df_filtered[col_article] == selected_art].copy(), col_month)
+    col_value_abs = "Значение"
+    to_article_name = "ТО без ПДВ та без акцизу"
 
-    for d in (art_all, art_filt):
-        d[col_ratio] = pd.to_numeric(d[col_ratio], errors="coerce")
+    src_all = df_all if df_all is not None else df_filtered
+
+    art_filt = _prep(df_filtered[df_filtered[col_article] == selected_art].copy(), col_month)
 
     if art_filt.empty:
         return pd.DataFrame(0.0, index=range(1, 13), columns=["Plan", "Fact", "Average", "Delta"])
@@ -180,45 +312,1145 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
     if not selected_tts:
         selected_tts = art_filt[col_tt].dropna().unique().tolist()
 
-    fact_src = _fact_rows(art_filt, col_plf)
-    plan_src = _plan_rows(art_filt, col_plf)
+    selected_tts_clean = [t for t in selected_tts if pd.notna(t)]
+    one_tt_selected = len(selected_tts_clean) == 1
+    months_used = art_filt["_m"].dropna().unique().tolist()
 
-    fact = (fact_src.groupby("_m")[col_ratio].mean()
-            .reindex(range(1, 13), fill_value=np.nan).rename("Fact"))
-    plan = (plan_src.groupby("_m")[col_ratio].mean()
-            .reindex(range(1, 13), fill_value=np.nan).rename("Plan"))
+    # ── Plan / Fact %: рахуємо від ТО вибраних ТТ ─────────────────────────────
+    # Знаменник ТО беремо з повного src_all, щоб додаткові фільтри
+    # не прибрали статтю "ТО без ПДВ та без акцизу".
+    to_base = src_all[
+        (src_all[col_article] == to_article_name)
+        & (src_all[col_tt].isin(selected_tts_clean if selected_tts_clean else selected_tts))
+    ].copy()
 
-    # ── Average: same logic as absolute ──────────────────────────────────────
-    all_fact = _fact_rows(art_all, col_plf)
-    global_avg = _build_global_avg(all_fact, col_ratio, col_article, col_tt,
-                                    group_factors, agg_fn="mean")
+    to_base = _prep(to_base, col_month)
+    to_base = to_base[to_base["_m"].isin(months_used)]
 
-    tt_grp = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
-    tt_table = (
-        fact_src.groupby(tt_grp, as_index=False)[col_ratio]
-        .mean()
-        .rename(columns={col_ratio: "Fact_tt"})
+    art_filt[col_value_abs] = pd.to_numeric(art_filt[col_value_abs], errors="coerce")
+    to_base[col_value_abs] = pd.to_numeric(to_base[col_value_abs], errors="coerce")
+
+    fact_art = _fact_rows(art_filt, col_plf)
+    plan_art = _plan_rows(art_filt, col_plf)
+    fact_to = _fact_rows(to_base, col_plf)
+    plan_to = _plan_rows(to_base, col_plf)
+
+    def calc_ratio_series(data_art, data_to):
+        s_art = data_art.groupby("_m")[col_value_abs].sum()
+        s_to = data_to.groupby("_m")[col_value_abs].sum()
+
+        combined = pd.concat([s_art, s_to], axis=1, keys=["art", "to"])
+        ratio = (combined["art"] / combined["to"].replace(0, np.nan)) * 100
+
+        return (
+            ratio
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0)
+            .reindex(range(1, 13), fill_value=0)
+        )
+
+    fact = calc_ratio_series(fact_art, fact_to).rename("Fact")
+    plan = calc_ratio_series(plan_art, plan_to).rename("Plan")
+
+    # ── Average % ─────────────────────────────────────────────────────────────
+    # Ключовий кейс: 1 ТТ + фактори групування.
+    # Беремо факторні значення вибраного ТТ і шукаємо всю групу в повному df.
+    # Далі Average % = середнє зі стовпця "% в ТО без акцизу та без ПДВ"
+    # по цій групі, статті, Fact-рядках і місяцях.
+    if one_tt_selected and group_factors and col_ratio and col_ratio in src_all.columns:
+        selected_tt = selected_tts_clean[0]
+        valid_factors = [f for f in group_factors if f in src_all.columns]
+
+        average = pd.Series(0.0, index=range(1, 13), name="Average")
+
+        if valid_factors:
+            tt_factor_rows = src_all[src_all[col_tt] == selected_tt].copy()
+            if selected_art is not None:
+                tt_factor_rows = tt_factor_rows[tt_factor_rows[col_article] == selected_art]
+            tt_factor_rows = _fact_rows(tt_factor_rows, col_plf)
+
+            if not tt_factor_rows.empty:
+                # Якщо в одному ТТ по статті є кілька наборів факторів,
+                # беремо всі унікальні комбінації та рахуємо норматив по них.
+                selected_factor_combos = (
+                    tt_factor_rows[valid_factors]
+                    .drop_duplicates()
+                    .dropna(how="all")
+                )
+
+                ratio_parts = []
+                src_ratio = _prep(src_all[src_all[col_article] == selected_art].copy(), col_month)
+                src_ratio = _fact_rows(src_ratio, col_plf).copy()
+                src_ratio[col_ratio] = pd.to_numeric(src_ratio[col_ratio], errors="coerce")
+
+                for _, combo in selected_factor_combos.iterrows():
+                    mask = pd.Series(True, index=src_ratio.index)
+                    for factor in valid_factors:
+                        val = combo[factor]
+                        if pd.isna(val):
+                            mask &= src_ratio[factor].isna()
+                        else:
+                            mask &= src_ratio[factor].astype(str).eq(str(val))
+                    ratio_parts.append(src_ratio[mask])
+
+                if ratio_parts:
+                    group_ratio_df = pd.concat(ratio_parts, ignore_index=True).drop_duplicates()
+                    average = (
+                        group_ratio_df
+                        .groupby("_m")[col_ratio]
+                        .mean()
+                        .replace([np.inf, -np.inf], np.nan)
+                        .fillna(0)
+                        .reindex(range(1, 13), fill_value=0)
+                        .rename("Average")
+                    )
+    else:
+        # Для всіх інших випадків залишаємо попередню динамічну логіку:
+        # Average % = Average_abs / Fact_TO вибраних ТТ * 100.
+        avg_abs_df = build_article_monthly(
+            src_all,
+            df_filtered,
+            col_tt,
+            col_article,
+            col_month,
+            col_value_abs,
+            col_plf,
+            selected_art,
+            selected_tts_clean if selected_tts_clean else selected_tts,
+            group_factors
+        )
+
+        avg_abs_by_month = avg_abs_df["Average"].reindex(range(1, 13), fill_value=0)
+        to_by_month = (
+            fact_to
+            .groupby("_m")[col_value_abs]
+            .sum()
+            .reindex(range(1, 13), fill_value=0)
+        )
+
+        average = (
+            (avg_abs_by_month / to_by_month.replace(0, np.nan)) * 100
+        ).replace([np.inf, -np.inf], np.nan).fillna(0)
+
+        average = average.reindex(range(1, 13), fill_value=0).rename("Average")
+
+    merged = (
+        pd.DataFrame(index=range(1, 13))
+        .join(plan)
+        .join(fact)
+        .join(average)
+        .fillna(0.0)
     )
-    tt_table = _merge_avg(tt_table, global_avg, group_factors, col_article, col_tt)
-    tt_table["Fact_tt"]      = tt_table["Fact_tt"].fillna(0)
-    tt_table["Average_Calc"] = tt_table["Average_Calc"].fillna(0)
-    tt_table.loc[tt_table["Fact_tt"] == 0, "Average_Calc"] = 0
 
-    # For ratio: use mean (not sum) when aggregating selected TTs
-    dynamic_average = (
-        tt_table[tt_table[col_tt].isin(selected_tts)]
-        .groupby("_m")["Average_Calc"].mean()
-        .reindex(range(1, 13), fill_value=0)
-        .rename("Average")
-    )
-
-    merged = (pd.DataFrame(index=range(1, 13))
-              .join(plan).join(fact).join(dynamic_average)
-              .fillna(0.0))
     merged.index.name = "month"
-    merged.loc[merged["Fact"] == 0, "Average"] = 0
+
+    # ВАЖЛИВО: НЕ обнуляємо Average при Fact == 0.
+    # Саме це приховувало Average % при виборі одного ТТ + факторів.
     merged["Delta"] = merged["Fact"] - merged["Average"]
+
     return merged
+
+# ── Factor Impact Analysis ────────────────────────────────────────────────────
+def analyze_factor_impact(df, df_filtered, col_tt, col_article, col_month,
+                          col_value, col_plf, selected_art, group_factors):
+    if not group_factors:
+        return None
+
+    # FIX: для аналізу впливу факторів використовуємо ПОВНИЙ df
+    art_all  = _prep(df[df[col_article] == selected_art], col_month)
+    all_fact = _fact_rows(art_all, col_plf)
+
+    impact_data = []
+    for factor in group_factors:
+        factor_impact = (
+            all_fact.groupby([factor, "_m"], as_index=False)[col_value]
+            .agg(Average="mean", Count="count", Total="sum", Std="std")
+        )
+        for _, row in factor_impact.iterrows():
+            impact_data.append({
+                "Фактор": factor,
+                "Значення": row[factor],
+                "Місяць": MONTH_LABELS.get(row["_m"], str(row["_m"])),
+                "Середнє": row["Average"],
+                "Кількість": row["Count"],
+                "Сума": row["Total"],
+                "Відхилення": row["Std"]
+            })
+
+    return pd.DataFrame(impact_data)
+
+
+def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_month,
+                                  col_value, col_plf, selected_art, group_factors):
+    if not group_factors:
+        st.info("Оберіть фактори групування для аналізу впливу.")
+        return
+
+    st.markdown(f"""
+    <div style="margin-top:20px;margin-bottom:8px;">
+      <span style="background:{ORANGE};color:white;font-weight:700;padding:4px 14px;
+                   font-size:0.9rem;border-radius:2px;">📊 Аналіз впливу комбінації факторів — {selected_art}</span>
+    </div>""", unsafe_allow_html=True)
+
+    selected_factors = st.multiselect(
+        "Оберіть фактори для комбінації:",
+        options=group_factors,
+        default=group_factors[:1],
+        key=f"factor_combo_multiselect_{selected_art}"
+    )
+
+    if not selected_factors:
+        st.info("Оберіть хоча б один фактор.")
+        return
+
+    art_all = _prep(df[df[col_article] == selected_art].copy(), col_month)
+    all_fact = _fact_rows(art_all, col_plf).copy()
+    all_fact[col_value] = pd.to_numeric(all_fact[col_value], errors="coerce")
+
+    combo_col = "Комбінація факторів"
+
+    all_fact[combo_col] = all_fact[selected_factors].astype(str).agg(" | ".join, axis=1)
+
+    combo_impact = (
+        all_fact
+        .groupby([combo_col, "_m"], as_index=False)[col_value]
+        .agg(
+            Середнє="mean",
+            Кількість="count",
+            Сума="sum",
+            Відхилення="std"
+        )
+    )
+
+    combo_impact["Місяць"] = combo_impact["_m"].map(MONTH_LABELS)
+
+    if combo_impact.empty:
+        st.warning("Недостатньо даних для аналізу комбінації факторів.")
+        return
+
+    pivot_impact = combo_impact.pivot_table(
+        index=combo_col,
+        columns="Місяць",
+        values="Середнє",
+        aggfunc="sum"
+    )
+
+    # FIX: сортуємо місяці за замовчуванням від jan до dec
+    pivot_impact = pivot_impact.reindex(
+        columns=[m for m in MONTHS_LIST if m in pivot_impact.columns]
+    )
+
+    summary_by_combo = combo_impact.groupby(combo_col, as_index=True).agg(
+        **{
+            "Середнє (загальне)": ("Середнє", "mean"),
+            "Всього записів": ("Кількість", "sum"),
+            "Сума": ("Сума", "sum")
+        }
+    )
+
+    pivot_impact = pivot_impact.join(summary_by_combo)
+
+    st.markdown(
+        f"**Вплив комбінації факторів: {' + '.join(selected_factors)}**"
+    )
+
+    st.dataframe(
+        pivot_impact.style
+            .background_gradient(
+                cmap="RdYlGn_r",
+                subset=[c for c in pivot_impact.columns if c in MONTHS_LIST]
+            )
+            .apply(_style_white_na, axis=None)
+            .format(lambda v: f"{v:,.0f}" if pd.notna(v) else "", na_rep=""),
+        use_container_width=True
+    )
+
+    max_lines = st.slider(
+        "Кількість комбінацій на графіку",
+        3, 30, 10,
+        key=f"factor_combo_top_n_{selected_art}"
+    )
+
+    top_combos = (
+        combo_impact
+        .groupby(combo_col)["Сума"]
+        .sum()
+        .abs()
+        .sort_values(ascending=False)
+        .head(max_lines)
+        .index
+    )
+
+    chart_data = combo_impact[combo_impact[combo_col].isin(top_combos)].copy()
+    chart_data = chart_data.sort_values([combo_col, "_m"])
+
+    fig = go.Figure()
+
+    # Орієнтир: середнє по всіх показаних комбінаціях за кожен місяць
+    avg_line = (
+        chart_data
+        .groupby("_m", as_index=False)["Середнє"]
+        .mean()
+        .sort_values("_m")
+    )
+    avg_line["Місяць"] = avg_line["_m"].map(MONTH_LABELS)
+
+    fig.add_trace(go.Scatter(
+        x=avg_line["Місяць"],
+        y=avg_line["Середнє"],
+        name="Середнє по вибраних комбінаціях",
+        mode="lines",
+        line=dict(width=4, dash="dash"),
+        hovertemplate=(
+            "<b>Середнє по комбінаціях</b><br>"
+            "Місяць: %{x}<br>"
+            "Середнє: %{y:,.0f}<extra></extra>"
+        )
+    ))
+
+    for combo in chart_data[combo_col].dropna().unique():
+        value_data = chart_data[chart_data[combo_col] == combo].copy()
+        value_data = value_data.sort_values("_m")
+
+        text_values = [f"{v:,.0f}" for v in value_data["Середнє"]] if max_lines <= 8 else None
+
+        fig.add_trace(go.Scatter(
+            x=value_data["Місяць"],
+            y=value_data["Середнє"],
+            name=str(combo),
+            mode="lines+markers+text" if max_lines <= 8 else "lines+markers",
+            text=text_values,
+            textposition="top center",
+            customdata=np.stack([
+                value_data["Кількість"].fillna(0),
+                value_data["Сума"].fillna(0),
+                value_data["Відхилення"].fillna(0),
+            ], axis=-1),
+            line=dict(width=2),
+            marker=dict(
+                size=np.clip(value_data["Кількість"].fillna(1).astype(float) + 5, 7, 18),
+                line=dict(width=1)
+            ),
+            hovertemplate=(
+                "<b>%{fullData.name}</b><br>"
+                "Місяць: %{x}<br>"
+                "Середнє: %{y:,.0f}<br>"
+                "Кількість записів: %{customdata[0]:,.0f}<br>"
+                "Сума: %{customdata[1]:,.0f}<br>"
+                "Std: %{customdata[2]:,.0f}<extra></extra>"
+            )
+        ))
+
+    fig.update_layout(
+        title=f"Динаміка впливу комбінації: {' + '.join(selected_factors)}",
+        xaxis_title="Місяць",
+        yaxis_title="Середнє значення",
+        height=560,
+        hovermode="x unified",
+        xaxis=dict(categoryorder="array", categoryarray=MONTHS_LIST),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.38, xanchor="left", x=0),
+        margin=dict(t=70, b=150, l=20, r=20),
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key=f"factor_combo_chart_{selected_art}_{'_'.join(selected_factors)}"
+    )
+
+
+def analyze_ratio_factor_impact(df, df_filtered, col_tt, col_article, col_month,
+                                 col_ratio, col_plf, selected_art, group_factors):
+    if not group_factors:
+        return None
+
+    # FIX: норма % береться з ПОВНОГО df
+    art_all  = _prep(df[df[col_article] == selected_art], col_month)
+    all_fact = _fact_rows(art_all, col_plf)
+    all_fact[col_ratio] = pd.to_numeric(all_fact[col_ratio], errors="coerce")
+
+    impact_data = []
+    for factor in group_factors:
+        factor_impact = (
+            all_fact.groupby([factor, "_m"], as_index=False)[col_ratio]
+            .agg(Average="mean", Count="count", Total="sum", Std="std")
+        )
+        for _, row in factor_impact.iterrows():
+            impact_data.append({
+                "Фактор": factor,
+                "Значення": row[factor],
+                "Місяць": MONTH_LABELS.get(row["_m"], str(row["_m"])),
+                "Середнє": row["Average"],
+                "Кількість": row["Count"],
+                "Сума": row["Total"],
+                "Відхилення": row["Std"]
+            })
+
+    return pd.DataFrame(impact_data)
+
+
+def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_month,
+                                         col_ratio, col_plf, selected_art, group_factors):
+    if not group_factors:
+        st.info("Оберіть фактори групування для аналізу впливу.")
+        return
+
+    st.markdown(f"""
+    <div style="margin-top:20px;margin-bottom:8px;">
+      <span style="background:{ORANGE};color:white;font-weight:700;padding:4px 14px;
+                   font-size:0.9rem;border-radius:2px;">📊 Аналіз впливу комбінації факторів (% в ТО) — {selected_art}</span>
+    </div>""", unsafe_allow_html=True)
+
+    selected_factors = st.multiselect(
+        "Оберіть фактори для комбінації:",
+        options=group_factors,
+        default=group_factors[:1],
+        key=f"ratio_factor_combo_multiselect_{selected_art}"
+    )
+
+    if not selected_factors:
+        st.info("Оберіть хоча б один фактор.")
+        return
+
+    art_all = _prep(df[df[col_article] == selected_art].copy(), col_month)
+    all_fact = _fact_rows(art_all, col_plf).copy()
+    all_fact[col_ratio] = pd.to_numeric(all_fact[col_ratio], errors="coerce")
+
+    combo_col = "Комбінація факторів"
+
+    all_fact[combo_col] = all_fact[selected_factors].astype(str).agg(" | ".join, axis=1)
+
+    combo_impact = (
+        all_fact
+        .groupby([combo_col, "_m"], as_index=False)[col_ratio]
+        .agg(
+            Середнє="mean",
+            Кількість="count",
+            Сума="sum",
+            Відхилення="std"
+        )
+    )
+
+    combo_impact["Місяць"] = combo_impact["_m"].map(MONTH_LABELS)
+
+    if combo_impact.empty:
+        st.warning("Недостатньо даних для аналізу комбінації факторів.")
+        return
+
+    pivot_impact = combo_impact.pivot_table(
+        index=combo_col,
+        columns="Місяць",
+        values="Середнє",
+        aggfunc="sum"
+    )
+
+    # FIX: сортуємо місяці за замовчуванням від jan до dec
+    pivot_impact = pivot_impact.reindex(
+        columns=[m for m in MONTHS_LIST if m in pivot_impact.columns]
+    )
+
+
+    summary_by_combo = combo_impact.groupby(combo_col, as_index=True).agg(
+        **{
+            "Середнє (загальне)": ("Середнє", "mean"),
+            "Всього записів": ("Кількість", "sum"),
+            "Сума": ("Сума", "sum")
+        }
+    )
+
+    pivot_impact = pivot_impact.join(summary_by_combo)
+
+    st.markdown(
+        f"**Вплив комбінації факторів на % в ТО: {' + '.join(selected_factors)}**"
+    )
+
+    st.dataframe(
+        pivot_impact.style
+            .background_gradient(
+                cmap="RdYlGn_r",
+                subset=[c for c in pivot_impact.columns if c in MONTHS_LIST]
+            )
+            .apply(_style_white_na, axis=None)
+            .format(lambda v: f"{v:.2f}%" if pd.notna(v) else "", na_rep=""),
+        use_container_width=True
+    )
+
+    max_lines = st.slider(
+        "Кількість комбінацій на графіку",
+        3, 30, 10,
+        key=f"ratio_factor_combo_top_n_{selected_art}"
+    )
+
+    top_combos = (
+        combo_impact
+        .groupby(combo_col)["Сума"]
+        .sum()
+        .abs()
+        .sort_values(ascending=False)
+        .head(max_lines)
+        .index
+    )
+
+    chart_data = combo_impact[combo_impact[combo_col].isin(top_combos)].copy()
+    chart_data = chart_data.sort_values([combo_col, "_m"])
+
+    fig = go.Figure()
+
+    # Орієнтир: середнє по всіх показаних комбінаціях за кожен місяць
+    avg_line = (
+        chart_data
+        .groupby("_m", as_index=False)["Середнє"]
+        .mean()
+        .sort_values("_m")
+    )
+    avg_line["Місяць"] = avg_line["_m"].map(MONTH_LABELS)
+
+    fig.add_trace(go.Scatter(
+        x=avg_line["Місяць"],
+        y=avg_line["Середнє"],
+        name="Середнє по вибраних комбінаціях",
+        mode="lines",
+        line=dict(width=4, dash="dash"),
+        hovertemplate=(
+            "<b>Середнє по комбінаціях</b><br>"
+            "Місяць: %{x}<br>"
+            "Середнє: %{y:.2f}%<extra></extra>"
+        )
+    ))
+
+    for combo in chart_data[combo_col].dropna().unique():
+        value_data = chart_data[chart_data[combo_col] == combo].copy()
+        value_data = value_data.sort_values("_m")
+
+        text_values = [f"{v:.2f}%" for v in value_data["Середнє"]] if max_lines <= 8 else None
+
+        fig.add_trace(go.Scatter(
+            x=value_data["Місяць"],
+            y=value_data["Середнє"],
+            name=str(combo),
+            mode="lines+markers+text" if max_lines <= 8 else "lines+markers",
+            text=text_values,
+            textposition="top center",
+            customdata=np.stack([
+                value_data["Кількість"].fillna(0),
+                value_data["Сума"].fillna(0),
+                value_data["Відхилення"].fillna(0),
+            ], axis=-1),
+            line=dict(width=2),
+            marker=dict(
+                size=np.clip(value_data["Кількість"].fillna(1).astype(float) + 5, 7, 18),
+                line=dict(width=1)
+            ),
+            hovertemplate=(
+                "<b>%{fullData.name}</b><br>"
+                "Місяць: %{x}<br>"
+                "Середнє: %{y:.2f}%<br>"
+                "Кількість записів: %{customdata[0]:,.0f}<br>"
+                "Сума: %{customdata[1]:.2f}%<br>"
+                "Std: %{customdata[2]:.2f}%<extra></extra>"
+            )
+        ))
+
+    fig.update_layout(
+        title=f"Динаміка впливу комбінації факторів (% в ТО): {' + '.join(selected_factors)}",
+        xaxis_title="Місяць",
+        yaxis_title="Середнє значення (%)",
+        yaxis=dict(tickformat=".2f", ticksuffix="%", zeroline=True),
+        height=560,
+        hovermode="x unified",
+        xaxis=dict(categoryorder="array", categoryarray=MONTHS_LIST),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.38, xanchor="left", x=0),
+        margin=dict(t=70, b=150, l=20, r=20),
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key=f"ratio_factor_combo_chart_{selected_art}_{'_'.join(selected_factors)}"
+    )
+
+
+
+
+# ── Local filters for combined factor impact tab ──────────────────────────────
+def _apply_combo_factor_filters(df_src, group_factors, key_prefix="combo_tab"):
+    """Apply filters only inside 'Аналіз впливу комбінації факторів'."""
+    if df_src is None or df_src.empty or not group_factors:
+        return df_src
+
+    filtered = df_src.copy()
+    valid_factors = [f for f in group_factors if f in filtered.columns]
+
+    if not valid_factors:
+        return filtered
+
+    st.markdown("#### 🔎 Фільтри тільки для цього блоку")
+    st.caption("Ці фільтри впливають лише на блок аналізу комбінації факторів і не змінюють інші таблиці/графіки.")
+
+    cols = st.columns(min(3, len(valid_factors)))
+
+    for i, factor in enumerate(valid_factors):
+        with cols[i % len(cols)]:
+            options = (
+                filtered[factor]
+                .dropna()
+                .astype(str)
+                .sort_values()
+                .unique()
+                .tolist()
+            )
+
+            selected_values = st.multiselect(
+                factor,
+                options=options,
+                default=[],
+                key=f"{key_prefix}_filter_{factor}"
+            )
+
+        if selected_values:
+            filtered = filtered[filtered[factor].astype(str).isin(selected_values)]
+
+    return filtered
+
+# ── Combined factor impact tab ────────────────────────────────────────────────
+def render_combined_factor_impact_tab(df, df_filtered, col_tt, col_article, col_month,
+                                      col_value, col_ratio, col_plf,
+                                      articles_to_show, group_factors):
+    st.markdown(f"""
+    <div style="margin-top:10px;margin-bottom:8px;">
+      <span style="background:{ORANGE};color:white;font-weight:700;padding:5px 14px;
+                   font-size:0.95rem;border-radius:3px;">
+        📊 Аналіз впливу комбінації факторів
+      </span>
+    </div>""", unsafe_allow_html=True)
+
+    if not group_factors:
+        st.info("Оберіть фактори групування в боковому меню.")
+        return
+
+    if not articles_to_show:
+        st.info("Оберіть хоча б одну статтю витрат.")
+        return
+
+    selected_combo_article = st.selectbox(
+        "Стаття витрат для аналізу комбінації факторів",
+        options=articles_to_show,
+        index=0,
+        key="combo_tab_selected_article"
+    )
+
+    # FIX: локальні фільтри тільки для цього блоку.
+    # Беремо df_filtered як базу, але не змінюємо глобальні фільтри та інші вкладки.
+    with st.expander("🔎 Фільтри для аналізу комбінації факторів", expanded=True):
+        df_combo_base = df_filtered.copy()
+        df_combo_base = df_combo_base[df_combo_base[col_article] == selected_combo_article].copy()
+
+        df_combo_filtered = _apply_combo_factor_filters(
+            df_combo_base,
+            group_factors,
+            key_prefix="combo_tab_only"
+        )
+
+    if df_combo_filtered.empty:
+        st.warning("Після вибраних фільтрів немає даних для аналізу комбінації факторів.")
+        return
+
+    analysis_kind_options = ["Абсолютні значення"]
+    if col_ratio:
+        analysis_kind_options.extend(["% в ТО", "Абсолютні + % в ТО"])
+
+    analysis_kind = st.radio(
+        "Тип аналізу",
+        options=analysis_kind_options,
+        horizontal=True,
+        key="combo_tab_analysis_kind"
+    )
+
+    st.caption(
+        "Комбінація факторів рахується як один спільний розріз, наприклад: "
+        "Місто | Формат ТО | Формат Площа. Локальні фільтри вище працюють тільки в цьому блоці."
+    )
+
+    if analysis_kind in ("Абсолютні значення", "Абсолютні + % в ТО"):
+        render_factor_impact_analysis(
+            df_combo_filtered,
+            df_combo_filtered,
+            col_tt,
+            col_article,
+            col_month,
+            col_value,
+            col_plf,
+            selected_combo_article,
+            group_factors
+        )
+
+    if col_ratio and analysis_kind in ("% в ТО", "Абсолютні + % в ТО"):
+        st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
+        render_ratio_factor_impact_analysis(
+            df_combo_filtered,
+            df_combo_filtered,
+            col_tt,
+            col_article,
+            col_month,
+            col_ratio,
+            col_plf,
+            selected_combo_article,
+            group_factors
+        )
+
+
+# ── Statistical factor analysis ───────────────────────────────────────────────
+def _safe_div(num, den):
+    return num / den if den not in (0, None) and pd.notna(den) else 0
+
+
+def _factor_stat_models(data, factor, value_col):
+    """Multi-model statistical impact analysis for one categorical factor."""
+    work = data[[factor, value_col]].copy()
+    work[value_col] = pd.to_numeric(work[value_col], errors="coerce")
+    work = work.dropna(subset=[factor, value_col])
+    work[factor] = work[factor].astype(str)
+
+    n = len(work)
+    k = work[factor].nunique(dropna=True)
+
+    if n < 5 or k < 2:
+        return None, pd.DataFrame()
+
+    overall_mean = work[value_col].mean()
+    overall_median = work[value_col].median()
+
+    groups = work.groupby(factor)[value_col]
+    means = groups.mean()
+    medians = groups.median()
+    counts = groups.count()
+    sums = groups.sum()
+    stds = groups.std().fillna(0)
+
+    # Model 1: ANOVA / Eta²
+    ss_total = ((work[value_col] - overall_mean) ** 2).sum()
+    ss_between = ((means - overall_mean) ** 2 * counts).sum()
+    ss_within = groups.apply(lambda x: ((x - x.mean()) ** 2).sum()).sum()
+    eta2 = _safe_div(ss_between, ss_total)
+
+    df_between = k - 1
+    df_within = n - k
+    f_stat = _safe_div(ss_between / df_between, ss_within / df_within) if df_between > 0 and df_within > 0 else 0
+
+    # Model 2: Correlation ratio η
+    correlation_eta = float(np.sqrt(max(eta2, 0)))
+
+    # Model 3: Cramér V after binning numeric target into quantile bins
+    cramer_v = 0.0
+    try:
+        q = min(5, max(2, work[value_col].nunique()))
+        target_bins = pd.qcut(work[value_col], q=q, duplicates="drop")
+        contingency = pd.crosstab(work[factor], target_bins)
+        if contingency.shape[0] > 1 and contingency.shape[1] > 1:
+            obs = contingency.to_numpy(dtype=float)
+            total = obs.sum()
+            expected = np.outer(obs.sum(axis=1), obs.sum(axis=0)) / total
+            chi2 = np.nansum((obs - expected) ** 2 / np.where(expected == 0, np.nan, expected))
+            r, c = obs.shape
+            cramer_v = float(np.sqrt(_safe_div(chi2, total * (min(r - 1, c - 1)))))
+            if not np.isfinite(cramer_v):
+                cramer_v = 0.0
+    except Exception:
+        cramer_v = 0.0
+
+    # Model 4: group-mean prediction vs global mean, measured by MAE reduction
+    pred_global = np.full(n, overall_mean)
+    pred_group_mean = work[factor].map(means.to_dict()).astype(float)
+    mae_global = np.mean(np.abs(work[value_col] - pred_global))
+    mae_group = np.mean(np.abs(work[value_col] - pred_group_mean))
+    mae_reduction = max(0, _safe_div(mae_global - mae_group, mae_global))
+
+    # Model 5: group-median prediction vs global median, robust to outliers
+    pred_group_median = work[factor].map(medians.to_dict()).astype(float)
+    mae_global_median = np.mean(np.abs(work[value_col] - overall_median))
+    mae_group_median = np.mean(np.abs(work[value_col] - pred_group_median))
+    robust_reduction = max(0, _safe_div(mae_global_median - mae_group_median, mae_global_median))
+
+    # Model 6: entropy reduction / information gain after factor split
+    entropy_reduction = 0.0
+    try:
+        bins = np.histogram_bin_edges(work[value_col], bins=min(10, max(2, work[value_col].nunique())))
+        hist_total, _ = np.histogram(work[value_col], bins=bins)
+        p_total = hist_total / hist_total.sum() if hist_total.sum() else np.array([])
+        entropy_total = -np.nansum(p_total * np.log2(p_total + 1e-12)) if len(p_total) else 0
+        entropy_cond = 0.0
+        for _, vals in groups:
+            hist, _ = np.histogram(vals, bins=bins)
+            if hist.sum() == 0:
+                continue
+            p = hist / hist.sum()
+            entropy_cond += (len(vals) / n) * (-np.nansum(p * np.log2(p + 1e-12)))
+        entropy_reduction = max(0, _safe_div(entropy_total - entropy_cond, entropy_total))
+    except Exception:
+        entropy_reduction = 0.0
+
+    # Model 7: Top vs Bottom lift — business spread between category averages
+    sorted_means = means.sort_values()
+    top_bottom_lift = (
+        _safe_div(sorted_means.iloc[-1] - sorted_means.iloc[0], abs(overall_mean))
+        if len(sorted_means) >= 2 else 0
+    )
+
+    # Model 8: weighted deviation of group means from global mean
+    std_total = work[value_col].std()
+    weighted_mean_deviation = (np.abs(means - overall_mean) * counts).sum() / counts.sum()
+    normalized_deviation = _safe_div(weighted_mean_deviation, std_total)
+
+    rating_values = [
+        eta2,
+        correlation_eta,
+        cramer_v,
+        mae_reduction,
+        robust_reduction,
+        entropy_reduction,
+        min(abs(top_bottom_lift), 1),
+        min(abs(normalized_deviation), 1),
+    ]
+    integrated_rating = float(np.nanmean([v for v in rating_values if pd.notna(v)])) if rating_values else 0.0
+
+    detail = pd.DataFrame({
+        "Значення фактора": means.index.astype(str),
+        "Кількість": counts.values,
+        "Сума": sums.values,
+        "Середнє": means.values,
+        "Медіана": medians.values,
+        "Std": stds.values,
+        "Відхилення від заг. середнього": (means - overall_mean).values,
+        "Lift до заг. середнього": [_safe_div(v - overall_mean, abs(overall_mean)) for v in means.values],
+    }).sort_values("Сума", ascending=False)
+
+    result = {
+        "Фактор": factor,
+        "Записів": n,
+        "Унікальних значень": k,
+        "ANOVA Eta²": eta2,
+        "Correlation η": correlation_eta,
+        "Cramér V (binned)": cramer_v,
+        "F-stat": f_stat,
+        "Mean model / MAE покращення": mae_reduction,
+        "Median model / MAE покращення": robust_reduction,
+        "Entropy ↓": entropy_reduction,
+        "Top-Bottom lift": top_bottom_lift,
+        "Норм. відхилення середніх": normalized_deviation,
+        "Інтегральний рейтинг впливу": integrated_rating,
+        "Середнє по статті": overall_mean,
+        "Медіана по статті": overall_median,
+    }
+
+    return result, detail
+
+
+def analyze_statistical_factor_models(df, col_article, col_value, col_plf,
+                                      selected_art, group_factors):
+    if not group_factors:
+        return pd.DataFrame(), {}
+
+    art_df = df[df[col_article] == selected_art].copy()
+    art_df = _fact_rows(art_df, col_plf).copy()
+    art_df[col_value] = pd.to_numeric(art_df[col_value], errors="coerce")
+    art_df = art_df.dropna(subset=[col_value])
+
+    rows = []
+    details = {}
+
+    for factor in group_factors:
+        if factor not in art_df.columns:
+            continue
+
+        row, detail = _factor_stat_models(art_df, factor, col_value)
+        if row is not None:
+            rows.append(row)
+            details[factor] = detail
+
+    if not rows:
+        return pd.DataFrame(), details
+
+    result = pd.DataFrame(rows)
+
+    score_cols = [
+        "ANOVA Eta²",
+        "Correlation η",
+        "Cramér V (binned)",
+        "Mean model / MAE покращення",
+        "Median model / MAE покращення",
+        "Entropy ↓",
+        "Top-Bottom lift",
+        "Норм. відхилення середніх",
+    ]
+    valid_score_cols = [c for c in score_cols if c in result.columns]
+    if "Інтегральний рейтинг впливу" not in result.columns:
+        result["Інтегральний рейтинг впливу"] = result[valid_score_cols].mean(axis=1) if valid_score_cols else 0.0
+    else:
+        result["Інтегральний рейтинг впливу"] = result["Інтегральний рейтинг впливу"].fillna(
+            result[valid_score_cols].mean(axis=1) if valid_score_cols else 0.0
+        )
+    result = result.sort_values("Інтегральний рейтинг впливу", ascending=False)
+
+    return result, details
+
+
+def analyze_combination_statistical_impact(df, col_article, col_value, col_plf,
+                                           selected_art, selected_factors):
+    if not selected_factors:
+        return pd.DataFrame(), pd.DataFrame()
+
+    art_df = df[df[col_article] == selected_art].copy()
+    art_df = _fact_rows(art_df, col_plf).copy()
+    art_df[col_value] = pd.to_numeric(art_df[col_value], errors="coerce")
+    art_df = art_df.dropna(subset=[col_value])
+
+    combo_col = "Комбінація факторів"
+    art_df[combo_col] = art_df[selected_factors].astype(str).agg(" | ".join, axis=1)
+
+    row, detail = _factor_stat_models(art_df, combo_col, col_value)
+    if row is None:
+        return pd.DataFrame(), pd.DataFrame()
+
+    score_cols = [
+        "ANOVA Eta²",
+        "Correlation η",
+        "Cramér V (binned)",
+        "Mean model / MAE покращення",
+        "Median model / MAE покращення",
+        "Entropy ↓",
+        "Top-Bottom lift",
+        "Норм. відхилення середніх",
+    ]
+    valid_score_cols = [c for c in score_cols if c in row and pd.notna(row.get(c))]
+    if "Інтегральний рейтинг впливу" not in row:
+        row["Інтегральний рейтинг впливу"] = (
+            float(np.mean([row[c] for c in valid_score_cols])) if valid_score_cols else 0.0
+        )
+
+    row["Фактор"] = " + ".join(selected_factors)
+    row["Тип"] = "Комбінація"
+
+    return pd.DataFrame([row]), detail
+
+
+def render_statistical_analysis_tab(df, col_article, col_value, col_plf,
+                                    articles_to_show, group_factors):
+    st.markdown(f"""
+    <div style="margin-top:10px;margin-bottom:8px;">
+      <span style="background:#2c3e50;color:white;font-weight:700;padding:5px 14px;
+                   font-size:0.95rem;border-radius:3px;">
+        📊 Статистичний аналіз впливу факторів на статтю витрат
+      </span>
+    </div>""", unsafe_allow_html=True)
+
+    if not group_factors:
+        st.info("Оберіть фактори групування в боковому меню.")
+        return
+
+    selected_stat_article = st.selectbox(
+        "Стаття витрат для статистичного аналізу",
+        options=articles_to_show,
+        index=0,
+        key="stat_selected_article"
+    )
+
+    selected_stat_factors = st.multiselect(
+        "Фактори для статистичного аналізу",
+        options=group_factors,
+        default=group_factors,
+        key="stat_selected_factors"
+    )
+
+    if not selected_stat_factors:
+        st.info("Оберіть хоча б один фактор.")
+        return
+
+    stat_df, detail_map = analyze_statistical_factor_models(
+        df, col_article, col_value, col_plf,
+        selected_stat_article, selected_stat_factors
+    )
+
+    if stat_df.empty:
+        st.warning("Недостатньо даних для статистичного аналізу.")
+        return
+
+    st.markdown("#### 1) Вплив кожного фактора за різними моделями")
+
+    pct_cols = [
+        "ANOVA Eta²",
+        "Correlation η",
+        "Cramér V (binned)",
+        "Mean model / MAE покращення",
+        "Median model / MAE покращення",
+        "Entropy ↓",
+        "Інтегральний рейтинг впливу",
+    ]
+
+    fmt_map = {
+        "ANOVA Eta²": "{:.2%}",
+        "Correlation η": "{:.2%}",
+        "Cramér V (binned)": "{:.2%}",
+        "Mean model / MAE покращення": "{:.2%}",
+        "Median model / MAE покращення": "{:.2%}",
+        "Entropy ↓": "{:.2%}",
+        "Top-Bottom lift": "{:.2%}",
+        "Норм. відхилення середніх": "{:.3f}",
+        "Інтегральний рейтинг впливу": "{:.2%}",
+        "F-stat": "{:,.2f}",
+        "Середнє по статті": "{:,.0f}",
+        "Медіана по статті": "{:,.0f}",
+    }
+
+    st.dataframe(
+        stat_df.style
+            .background_gradient(cmap="Greens", subset=["Інтегральний рейтинг впливу"])
+            .background_gradient(cmap="Blues", subset=["ANOVA Eta²"])
+            .background_gradient(cmap="Purples", subset=["Cramér V (binned)"] if "Cramér V (binned)" in stat_df.columns else [])
+            .apply(_style_white_na, axis=None)
+            .format(fmt_map, na_rep=""),
+        use_container_width=True
+    )
+
+    chart_cols = [
+        c for c in [
+            "ANOVA Eta²",
+            "Correlation η",
+            "Cramér V (binned)",
+            "Mean model / MAE покращення",
+            "Median model / MAE покращення",
+            "Entropy ↓",
+            "Інтегральний рейтинг впливу",
+        ] if c in stat_df.columns
+    ]
+
+    fig = go.Figure()
+    for c in chart_cols:
+        fig.add_trace(go.Bar(
+            x=stat_df["Фактор"],
+            y=stat_df[c],
+            name=c,
+            text=[f"{v:.1%}" for v in stat_df[c]],
+            textposition="auto",
+        ))
+
+    fig.update_layout(
+        title=f"Порівняння сили впливу факторів — {selected_stat_article}",
+        xaxis_title="Фактор",
+        yaxis_title="Сила впливу",
+        yaxis=dict(tickformat=".0%"),
+        barmode="group",
+        height=430,
+        legend=dict(orientation="h", y=-0.25, x=0),
+        margin=dict(t=50, b=90, l=10, r=10),
+    )
+    st.plotly_chart(fig, use_container_width=True, key=f"stat_models_chart_{selected_stat_article}")
+
+    top_factor = stat_df.iloc[0]
+    st.success(
+        f"🏆 Найбільш впливовий фактор: **{top_factor['Фактор']}** · "
+        f"інтегральний рейтинг: **{top_factor['Інтегральний рейтинг впливу']:.2%}**"
+    )
+
+    with st.expander("🔎 Деталізація по значеннях факторів", expanded=False):
+        factor_for_detail = st.selectbox(
+            "Оберіть фактор для деталізації",
+            options=list(detail_map.keys()),
+            key=f"stat_detail_factor_{selected_stat_article}"
+        )
+
+        detail_df = detail_map.get(factor_for_detail, pd.DataFrame())
+        if not detail_df.empty:
+            st.dataframe(
+                detail_df.style
+                    .background_gradient(cmap="RdYlGn_r", subset=["Відхилення від заг. середнього"])
+                    .apply(_style_white_na, axis=None)
+                    .format({
+                        "Кількість": "{:,.0f}",
+                        "Сума": "{:,.0f}",
+                        "Середнє": "{:,.0f}",
+                        "Медіана": "{:,.0f}",
+                        "Std": "{:,.0f}",
+                        "Відхилення від заг. середнього": "{:,.0f}",
+                        "Lift до заг. середнього": "{:.2%}",
+                    }),
+                use_container_width=True
+            )
+
+    st.markdown("#### 2) Статистичний аналіз комбінації факторів")
+
+    combo_factors = st.multiselect(
+        "Оберіть фактори для комбінованої статистичної моделі",
+        options=selected_stat_factors,
+        default=selected_stat_factors[:min(2, len(selected_stat_factors))],
+        key=f"stat_combo_factors_{selected_stat_article}"
+    )
+
+    if combo_factors:
+        combo_stat, combo_detail = analyze_combination_statistical_impact(
+            df, col_article, col_value, col_plf,
+            selected_stat_article, combo_factors
+        )
+
+        if combo_stat.empty:
+            st.info("Недостатньо даних для комбінованої статистичної моделі.")
+        else:
+            if "Інтегральний рейтинг впливу" not in combo_stat.columns:
+                score_cols = [
+                    "ANOVA Eta²",
+                    "Correlation η",
+                    "Cramér V (binned)",
+                    "Mean model / MAE покращення",
+                    "Median model / MAE покращення",
+                    "Entropy ↓",
+                    "Top-Bottom lift",
+                    "Норм. відхилення середніх",
+                ]
+                valid_score_cols = [c for c in score_cols if c in combo_stat.columns]
+                combo_stat["Інтегральний рейтинг впливу"] = (
+                    combo_stat[valid_score_cols].mean(axis=1) if valid_score_cols else 0.0
+                )
+
+            combo_style = combo_stat.style.apply(_style_white_na, axis=None).format(fmt_map, na_rep="")
+            if "Інтегральний рейтинг впливу" in combo_stat.columns:
+                combo_style = combo_style.background_gradient(
+                    cmap="Purples",
+                    subset=["Інтегральний рейтинг впливу"]
+                )
+
+            st.dataframe(
+                combo_style,
+                use_container_width=True
+            )
+
+            max_combo_rows = st.slider(
+                "Кількість комбінацій у деталізації",
+                5, 100, 25,
+                key=f"stat_combo_rows_{selected_stat_article}"
+            )
+
+            st.dataframe(
+                combo_detail.head(max_combo_rows).style
+                    .background_gradient(cmap="RdYlGn_r", subset=["Відхилення від заг. середнього"])
+                    .apply(_style_white_na, axis=None)
+                    .format({
+                        "Кількість": "{:,.0f}",
+                        "Сума": "{:,.0f}",
+                        "Середнє": "{:,.0f}",
+                        "Медіана": "{:,.0f}",
+                        "Std": "{:,.0f}",
+                        "Відхилення від заг. середнього": "{:,.0f}",
+                        "Lift до заг. середнього": "{:.2%}",
+                    }),
+                use_container_width=True
+            )
+
+    st.caption(
+        "Моделі: ANOVA Eta² показує частку варіації витрат, яку пояснює фактор; "
+        "Correlation η та Cramér V показують силу нелінійного/категоріального зв’язку; "
+        "Mean/Median model показують зменшення MAE при прогнозі через групові середні/медіани; "
+        "Entropy ↓ показує інформаційний виграш; Top-Bottom lift — бізнес-розкид між групами; "
+        "інтегральний рейтинг — середня оцінка сили впливу за моделями."
+    )
 
 
 # ── Heatmap builders ─────────────────────────────────────────────────────────
@@ -228,11 +1460,13 @@ def build_heat_data(df, df_filtered, col_tt, col_article, col_month, col_value,
     df_num = df.copy()
     df_num[col_value] = pd.to_numeric(df_num[col_value], errors="coerce")
 
+    # FIX: global_avg_std — з ПОВНОГО df
     global_avg_std = (
         _fact_rows(df_num, col_plf)
         .groupby(group_factors + [col_article], as_index=False)[col_value]
         .agg(Average_Calc="mean", Std="std")
     )
+
     filt = df_filtered.copy()
     filt[col_value] = pd.to_numeric(filt[col_value], errors="coerce")
     data_heat = _prep(
@@ -240,13 +1474,13 @@ def build_heat_data(df, df_filtered, col_tt, col_article, col_month, col_value,
         col_month
     )
 
-    tt_grp = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
+    tt_grp   = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
     tt_table = (
         data_heat.groupby(tt_grp, as_index=False)[col_value]
         .sum().rename(columns={col_value: "Fact"})
     )
     merge_cols = list(dict.fromkeys(group_factors + [col_article]))
-    tt_table = pd.merge(tt_table, global_avg_std, on=merge_cols, how="left")
+    tt_table   = pd.merge(tt_table, global_avg_std, on=merge_cols, how="left")
     tt_table["Delta"]   = tt_table["Fact"] - tt_table["Average_Calc"]
     tt_table["Delta_%"] = tt_table["Delta"] / tt_table["Average_Calc"].replace(0, np.nan)
     tt_table["Z"]       = tt_table["Delta"] / tt_table["Std"].replace(0, np.nan)
@@ -270,37 +1504,38 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
     df_num[col_ratio] = pd.to_numeric(df_num[col_ratio], errors="coerce")
     df_num = _prep(df_num, col_month)
 
-    has_plf = col_plf and col_plf in df_num.columns
-    data_heat = df_num[
-        (df_num[col_plf] == "F" if has_plf else True) &
-        df_num[col_article].isin(articles_to_show)
-    ].copy() if has_plf else df_num[df_num[col_article].isin(articles_to_show)].copy()
+    has_plf   = col_plf and col_plf in df_num.columns
+    data_heat = (
+        df_num[(df_num[col_plf] == "F") & df_num[col_article].isin(articles_to_show)].copy()
+        if has_plf
+        else df_num[df_num[col_article].isin(articles_to_show)].copy()
+    )
 
-    # Global average — same logic as build_ratio_monthly
+    # FIX: global Average — з ПОВНОГО df
     df_all_num = df.copy()
     df_all_num[col_ratio] = pd.to_numeric(df_all_num[col_ratio], errors="coerce")
     df_all_num = _prep(df_all_num, col_month)
-    avg_src = (_fact_rows(df_all_num, col_plf) if has_plf else df_all_num)
-    avg_src = avg_src[avg_src[col_article].isin(articles_to_show)]
+    avg_src    = (_fact_rows(df_all_num, col_plf) if has_plf else df_all_num)
+    avg_src    = avg_src[avg_src[col_article].isin(articles_to_show)]
 
     if group_factors:
-        grp_cols = list(dict.fromkeys(group_factors + [col_article, "_m"]))
+        grp_cols   = list(dict.fromkeys(group_factors + [col_article, "_m"]))
         global_avg = (avg_src.groupby(grp_cols)[col_ratio]
                       .mean().reset_index()
                       .rename(columns={col_ratio: "Average_Calc"}))
-        merge_on = grp_cols
+        merge_on   = grp_cols
     else:
         global_avg = (avg_src.groupby([col_article, "_m"])[col_ratio]
                       .mean().reset_index()
                       .rename(columns={col_ratio: "Average_Calc"}))
-        merge_on = [col_article, "_m"]
+        merge_on   = [col_article, "_m"]
 
-    tt_grp = list(dict.fromkeys([col_tt] + group_factors + [col_article, "_m"]))
+    tt_grp   = list(dict.fromkeys([col_tt] + group_factors + [col_article, "_m"]))
     tt_table = (
         data_heat.groupby(tt_grp, as_index=False)[col_ratio]
         .mean().rename(columns={col_ratio: "Fact"})
     )
-    tt_table = pd.merge(tt_table, global_avg, on=merge_on, how="left")
+    tt_table   = pd.merge(tt_table, global_avg, on=merge_on, how="left")
     tt_table["Delta"]   = tt_table["Fact"] - tt_table["Average_Calc"]
     tt_table["Delta_%"] = tt_table["Delta"] / tt_table["Average_Calc"].replace(0, np.nan)
     tt_table["Std"]     = np.nan
@@ -316,12 +1551,14 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
 
 
 def _fill_heat_cols(heat):
+    # Missing months/cells must stay NaN, not None/0.
+    # _style_white_na renders empty cells as white.
     for m in range(1, 13):
         if m not in heat.columns:
-            heat[m] = None
+            heat[m] = np.nan
     heat = heat[sorted(heat.columns)]
     heat.columns = [MONTH_LABELS.get(int(c), str(c)) for c in heat.columns]
-    return heat
+    return heat.replace([np.inf, -np.inf], np.nan)
 
 
 # ── TT Pivot ─────────────────────────────────────────────────────────────────
@@ -382,9 +1619,85 @@ def _th(bg_color):
     return (f"background:{bg_color};color:white;font-weight:bold;border:1px solid #aaa;"
             "padding:4px 8px;text-align:center;font-size:0.78rem;")
 
-
 TD  = "border:1px solid #ccc;padding:3px 7px;text-align:right;font-size:0.78rem;"
 TL  = "border:1px solid #ccc;padding:3px 7px;font-size:0.78rem;font-weight:600;white-space:nowrap;"
+
+
+def _style_white_na(data):
+    """Make all None/NaN cells white in pandas Styler tables."""
+    if isinstance(data, pd.DataFrame):
+        return pd.DataFrame(
+            np.where(pd.isna(data), "background-color: white !important; color: black !important;", ""),
+            index=data.index,
+            columns=data.columns,
+        )
+    return ["background-color: white !important; color: black !important;" if pd.isna(v) else "" for v in data]
+
+
+def _build_tt_display_map(df_src, col_tt, col_division=None):
+    """Map technical TT key to display name from Підрозділ. Calculations remain on TT."""
+    if (
+        df_src is None or df_src.empty
+        or not col_tt or col_tt not in df_src.columns
+        or not col_division or col_division not in df_src.columns
+    ):
+        return {}
+
+    work = df_src[[col_tt, col_division]].dropna(subset=[col_tt]).copy()
+    work[col_tt] = work[col_tt].astype(str)
+    work[col_division] = work[col_division].where(work[col_division].notna(), "")
+
+    display_map = {}
+    for tt_key, vals in work.groupby(col_tt)[col_division]:
+        clean_vals = [str(v).strip() for v in vals.tolist() if str(v).strip() and str(v).strip().lower() != "nan"]
+        display_map[tt_key] = clean_vals[0] if clean_vals else tt_key
+    return display_map
+
+
+def _tt_display_label(tt_value, tt_display_map):
+    """Return display label for TT using Підрозділ if available."""
+    key = str(tt_value)
+    return tt_display_map.get(key, tt_value)
+
+
+def _display_tt_series_index(series, df_src, col_tt, col_division=None):
+    """For UI only: replace Series TT index with Підрозділ labels; calculations stay grouped by TT."""
+    out = series.copy()
+    tt_display_map = _build_tt_display_map(df_src, col_tt, col_division)
+    if tt_display_map:
+        out.index = [_tt_display_label(v, tt_display_map) for v in out.index]
+    return out
+
+
+def _replace_tt_index_with_division(df_in, df_src, col_tt, col_division=None, index_name="Підрозділ"):
+    """For UI display only: replace TT index labels with Підрозділ labels."""
+    out = df_in.copy()
+    tt_display_map = _build_tt_display_map(df_src, col_tt, col_division)
+    if tt_display_map:
+        out.index = [_tt_display_label(v, tt_display_map) for v in out.index]
+        out.index.name = index_name
+    return out
+
+
+def _add_division_display_column(df_in, df_src, col_tt, col_division=None, display_col="Підрозділ"):
+    """For UI display only: add Підрозділ display column and keep calculations grouped by TT."""
+    out = df_in.copy()
+    tt_display_map = _build_tt_display_map(df_src, col_tt, col_division)
+    if col_tt in out.columns:
+        out[display_col] = out[col_tt].map(lambda v: _tt_display_label(v, tt_display_map))
+    return out
+
+
+def _fmt_abs_html(v):
+    if pd.isna(v):
+        return f'<td style="{TD}background-color:white !important;color:black !important;"></td>'
+    return f'<td style="{TD}{"color:#c0392b;" if v < 0 else ""}">{v:,.0f}</td>'
+
+
+def _fmt_pct_html(v):
+    if pd.isna(v):
+        return f'<td style="{TD}background-color:white !important;color:black !important;"></td>'
+    return f'<td style="{TD}{"color:#c0392b;" if v < 0 else ""}">{v:.2f}%</td>'
 
 
 def _make_pills(series, color, bg):
@@ -414,8 +1727,7 @@ def _make_pct_pills(series, color, bg):
     return pills
 
 
-def _render_slicer(article_idx, prefix, df_filtered, col_tt, col_article, title):
-    """Shared TT slicer widget. Returns current active_tt."""
+def _render_slicer(article_idx, prefix, df_filtered, col_tt, col_article, title, col_division=None):
     skey = f"{prefix}_slicer_tt_{article_idx}"
     if skey not in st.session_state:
         st.session_state[skey] = "__ALL__"
@@ -427,12 +1739,18 @@ def _render_slicer(article_idx, prefix, df_filtered, col_tt, col_article, title)
     if not available_tts:
         return active_tt
 
+    tt_display_map = _build_tt_display_map(df_filtered, col_tt, col_division)
+
     with st.expander("🏪 Слайсер по ТТ — клікни для деталізації", expanded=False):
         search_key = f"{prefix}_slicer_search_{article_idx}"
         search_val = st.text_input("🔎 Пошук магазину", value="",
                                    placeholder="Введіть назву...", key=search_key)
         filtered_tts = (
-            [t for t in available_tts if search_val.lower() in str(t).lower()]
+            [
+                t for t in available_tts
+                if search_val.lower() in str(t).lower()
+                or search_val.lower() in str(_tt_display_label(t, tt_display_map)).lower()
+            ]
             if search_val else available_tts
         )
         all_options   = ["__ALL__"] + list(filtered_tts)
@@ -446,7 +1764,7 @@ def _render_slicer(article_idx, prefix, df_filtered, col_tt, col_article, title)
             chunk = items_to_show[row_start:row_start + 6]
             cols  = st.columns(len(chunk))
             for ci, tt_opt in enumerate(chunk):
-                label    = "🔁 Всі" if tt_opt == "__ALL__" else str(tt_opt)
+                label    = "🔁 Всі" if tt_opt == "__ALL__" else str(_tt_display_label(tt_opt, tt_display_map))
                 btn_type = "primary" if active_tt == tt_opt else "secondary"
                 with cols[ci]:
                     if st.button(label, key=f"{prefix}_btn_{article_idx}_{row_start}_{ci}_{hash(str(tt_opt))}",
@@ -462,18 +1780,122 @@ def _render_slicer(article_idx, prefix, df_filtered, col_tt, col_article, title)
                 st.rerun()
 
         if active_tt != "__ALL__":
-            st.caption(f"📍 Показано тільки: **{active_tt}**")
+            st.caption(f"📍 Показано тільки: **{_tt_display_label(active_tt, tt_display_map)}**")
         else:
             st.caption(f"Показано всі ТТ · знайдено: {len(filtered_tts)}")
 
     return active_tt
 
 
+
+
+def _render_shared_tt_slicer(article_idx, df_filtered, col_tt, col_article, title, col_division=None):
+    """Shared compact TT slicer as buttons: one TT = one compact button."""
+    skey = f"shared_slicer_tt_{article_idx}"
+    search_key = f"shared_slicer_search_{article_idx}"
+    show_key = f"shared_slicer_show_more_{article_idx}"
+
+    available_tts = sorted(
+        df_filtered[df_filtered[col_article] == title][col_tt].dropna().unique(), key=str
+    )
+    if not available_tts:
+        return "__ALL__"
+
+    tt_display_map = _build_tt_display_map(df_filtered, col_tt, col_division)
+
+    options_all = ["__ALL__"] + list(available_tts)
+    if skey not in st.session_state or st.session_state[skey] not in options_all:
+        st.session_state[skey] = "__ALL__"
+    if show_key not in st.session_state:
+        st.session_state[show_key] = False
+
+    st.markdown(f"""
+    <div style="margin:6px 0 4px 0;padding:5px 8px;border:1px solid #ddd;
+                border-radius:6px;background:#fafafa;">
+      <div style="font-size:0.76rem;color:#555;font-weight:700;line-height:1.1;">
+        🏪 Спільний слайсер ТТ — керує обома таблицями та графіками: {title}
+      </div>
+    </div>
+    <style>
+      div[data-testid="stButton"] > button {{
+          padding: 1px 5px !important;
+          font-size: 10.5px !important;
+          min-height: 23px !important;
+          height: 23px !important;
+          border-radius: 5px !important;
+          line-height: 1 !important;
+          white-space: nowrap !important;
+      }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.expander("🔘 ТТ кнопками", expanded=False):
+        top_cols = st.columns([5, 1])
+        with top_cols[0]:
+            search_val = st.text_input(
+                "Пошук ТТ",
+                value="",
+                placeholder="Пошук...",
+                key=search_key,
+                label_visibility="collapsed"
+            )
+        with top_cols[1]:
+            if st.button("Скинути", key=f"shared_slicer_reset_{article_idx}", use_container_width=True):
+                st.session_state[skey] = "__ALL__"
+                st.rerun()
+
+        filtered_tts = (
+            [
+                t for t in available_tts
+                if search_val.lower() in str(t).lower()
+                or search_val.lower() in str(_tt_display_label(t, tt_display_map)).lower()
+            ]
+            if search_val else available_tts
+        )
+        options = ["__ALL__"] + list(filtered_tts)
+
+        cols_per_row = 10
+        visible_limit = 40
+        items_to_show = options if st.session_state[show_key] else options[:visible_limit]
+
+        for row_start in range(0, len(items_to_show), cols_per_row):
+            chunk = items_to_show[row_start:row_start + cols_per_row]
+            cols = st.columns(len(chunk))
+            for ci, tt_opt in enumerate(chunk):
+                label = "Всі" if tt_opt == "__ALL__" else str(_tt_display_label(tt_opt, tt_display_map))
+                if len(label) > 13:
+                    label = label[:12] + "…"
+
+                with cols[ci]:
+                    if st.button(
+                        label,
+                        key=f"shared_tt_btn_{article_idx}_{row_start}_{ci}_{hash(str(tt_opt))}",
+                        type="primary" if st.session_state[skey] == tt_opt else "secondary",
+                        use_container_width=True,
+                        help="Всі магазини" if tt_opt == "__ALL__" else str(_tt_display_label(tt_opt, tt_display_map))
+                    ):
+                        st.session_state[skey] = tt_opt
+                        st.rerun()
+
+        if len(options) > visible_limit:
+            remaining = len(options) - visible_limit
+            toggle_label = "▲ Згорнути" if st.session_state[show_key] else f"▼ Показати ще {remaining}"
+            if st.button(toggle_label, key=f"shared_slicer_toggle_{article_idx}"):
+                st.session_state[show_key] = not st.session_state[show_key]
+                st.rerun()
+
+        if st.session_state[skey] == "__ALL__":
+            st.caption(f"Показано всі ТТ · знайдено: {len(filtered_tts)}")
+        else:
+            st.caption(f"📍 Спільний фільтр для обох блоків: **{_tt_display_label(st.session_state[skey], tt_display_map)}**")
+
+    return st.session_state[skey]
+
 # ── Article block — absolute ─────────────────────────────────────────────────
 
 def render_article_block(title, table_df, df, df_filtered,
                           col_tt, col_article, col_month, col_value, col_plf,
-                          group_factors, tt_val, article_idx):
+                          group_factors, tt_val, article_idx, active_tt=None, col_division=None):
     rows_cfg = [
         ("План",    "Plan",    "#ffffff", "#333333"),
         ("Факт",    "Fact",    "#e8d5f5", PURPLE),
@@ -482,7 +1904,8 @@ def render_article_block(title, table_df, df, df_filtered,
     ]
     th = _th(GREEN_HDR)
 
-    active_tt = _render_slicer(article_idx, "abs", df_filtered, col_tt, col_article, title)
+    if active_tt is None:
+        active_tt = _render_slicer(article_idx, "abs", df_filtered, col_tt, col_article, title, col_division)
 
     if active_tt != "__ALL__":
         df_filt_tt = df_filtered[df_filtered[col_tt] == active_tt].copy()
@@ -493,8 +1916,10 @@ def render_article_block(title, table_df, df, df_filtered,
     else:
         display_df = table_df
 
+    tt_display_map = _build_tt_display_map(df_filtered, col_tt, col_division)
+    active_tt_label = _tt_display_label(active_tt, tt_display_map) if active_tt != "__ALL__" else active_tt
     badge = (f'<span style="margin-left:10px;background:{PURPLE};color:white;font-size:0.78rem;'
-             f'padding:2px 10px;border-radius:10px;">📍 {active_tt}</span>'
+             f'padding:2px 10px;border-radius:10px;">📍 {active_tt_label}</span>'
              if active_tt != "__ALL__" else "")
     st.markdown(f"""
     <div style="margin-top:20px;margin-bottom:4px;">
@@ -512,12 +1937,12 @@ def render_article_block(title, table_df, df, df_filtered,
         total = sum(vals)
         html += f'<tr style="background:{bg};"><td style="{TL}color:{color};">{label}</td>'
         for v in vals:
-            html += f'<td style="{TD}{"color:#c0392b;" if v < 0 else ""}">{v:,.0f}</td>'
-        html += f'<td style="{TD}font-weight:700;">{total:,.0f}</td></tr>'
+            html += _fmt_abs_html(v)
+        total_html = "" if pd.isna(total) else f"{total:,.0f}"
+        html += f'<td style="{TD}font-weight:700;background:{"white !important" if pd.isna(total) else "transparent"};">{total_html}</td></tr>'
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
-    # Metrics
     facts       = [display_df.loc[m, "Fact"] for m in range(1, 13)]
     nz          = [f for f in facts if f != 0]
     avg_monthly = np.mean(nz) if nz else 0
@@ -534,10 +1959,12 @@ def render_article_block(title, table_df, df, df_filtered,
         sub = df_filtered[(df_filtered[col_article] == title) & (df_filtered[col_plf] == "F")].copy()
         sub[col_value] = pd.to_numeric(sub[col_value], errors="coerce")
         if not sub.empty and col_tt in sub.columns:
-            tt_totals = sub.groupby(col_tt)[col_value].sum().dropna().sort_values()
-            n = min(3, len(tt_totals))
-            best_pills  = _make_pills(tt_totals.head(n), "#1b5e20", "#e8f5e9")
-            worst_pills = _make_pills(tt_totals.tail(n).iloc[::-1], "#7f0000", "#ffebee")
+            tt_totals   = sub.groupby(col_tt)[col_value].sum().dropna().sort_values()
+            n           = min(3, len(tt_totals))
+            best_series = _display_tt_series_index(tt_totals.head(n), df_filtered, col_tt, col_division)
+            worst_series = _display_tt_series_index(tt_totals.tail(n).iloc[::-1], df_filtered, col_tt, col_division)
+            best_pills  = _make_pills(best_series, "#1b5e20", "#e8f5e9")
+            worst_pills = _make_pills(worst_series, "#7f0000", "#ffebee")
 
     best_block = f"""
       <div style="flex:1;min-width:220px;">
@@ -581,11 +2008,12 @@ def render_article_block(title, table_df, df, df_filtered,
     st.plotly_chart(fig, use_container_width=True, key=f"chart_{article_idx}_{active_tt}")
 
 
+
 # ── Article block — ratio ────────────────────────────────────────────────────
 
 def render_ratio_article_block(title, table_df, df, df_filtered,
                                 col_tt, col_article, col_month, col_ratio, col_plf,
-                                tt_val, article_idx, group_factors=None):
+                                tt_val, article_idx, group_factors=None, active_tt=None, col_division=None):
     if group_factors is None:
         group_factors = []
 
@@ -597,7 +2025,8 @@ def render_ratio_article_block(title, table_df, df, df_filtered,
     ]
     th = _th(TEAL_HDR)
 
-    active_tt = _render_slicer(article_idx, "rat", df_filtered, col_tt, col_article, title)
+    if active_tt is None:
+        active_tt = _render_slicer(article_idx, "rat", df_filtered, col_tt, col_article, title, col_division)
 
     if active_tt != "__ALL__":
         df_filt_tt = df_filtered[df_filtered[col_tt] == active_tt].copy()
@@ -608,13 +2037,17 @@ def render_ratio_article_block(title, table_df, df, df_filtered,
     else:
         display_df = table_df
 
+    tt_display_map = _build_tt_display_map(df_filtered, col_tt, col_division)
+    active_tt_label = _tt_display_label(active_tt, tt_display_map) if active_tt != "__ALL__" else active_tt
     badge = (f'<span style="margin-left:10px;background:{TEAL};color:white;font-size:0.78rem;'
-             f'padding:2px 10px;border-radius:10px;">📍 {active_tt}</span>'
+             f'padding:2px 10px;border-radius:10px;">📍 {active_tt_label}</span>'
              if active_tt != "__ALL__" else "")
     st.markdown(f"""
     <div style="margin-top:12px;margin-bottom:4px;">
       <span style="background:{TEAL_HDR};color:white;font-weight:700;padding:4px 14px;
                    font-size:0.85rem;border-radius:2px;">📊 % в ТО — {title}</span>{badge}
+      <span style="margin-left:10px;background:#fff3cd;color:#856404;font-size:0.7rem;
+                   padding:2px 8px;border-radius:3px;">💡 Average% = (Average₍абс₎ / ТО) × 100</span>
     </div>""", unsafe_allow_html=True)
 
     html = (f'<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;'
@@ -628,8 +2061,9 @@ def render_ratio_article_block(title, table_df, df, df_filtered,
         summary = np.mean(nz) if nz else 0.0
         html   += f'<tr style="background:{bg};"><td style="{TL}color:{color};">{label}</td>'
         for v in vals:
-            html += f'<td style="{TD}{"color:#c0392b;" if v < 0 else ""}">{v:.2f}%</td>'
-        html += f'<td style="{TD}font-weight:700;">{summary:.2f}%</td></tr>'
+            html += _fmt_pct_html(v)
+        summary_html = "" if pd.isna(summary) else f"{summary:.2f}%"
+        html += f'<td style="{TD}font-weight:700;background:{"white !important" if pd.isna(summary) else "transparent"};">{summary_html}</td></tr>'
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
@@ -649,10 +2083,12 @@ def render_ratio_article_block(title, table_df, df, df_filtered,
         if col_plf and col_plf in sub.columns:
             sub = sub[sub[col_plf] == "F"]
         if not sub.empty and col_tt in sub.columns:
-            tt_avgs = sub.groupby(col_tt)[col_ratio].mean().dropna().sort_values()
-            n = min(3, len(tt_avgs))
-            best_pills  = _make_pct_pills(tt_avgs.head(n), "#1b5e20", "#e8f5e9")
-            worst_pills = _make_pct_pills(tt_avgs.tail(n).iloc[::-1], "#7f0000", "#ffebee")
+            tt_avgs     = sub.groupby(col_tt)[col_ratio].mean().dropna().sort_values()
+            n           = min(3, len(tt_avgs))
+            best_series = _display_tt_series_index(tt_avgs.head(n), df_filtered, col_tt, col_division)
+            worst_series = _display_tt_series_index(tt_avgs.tail(n).iloc[::-1], df_filtered, col_tt, col_division)
+            best_pills  = _make_pct_pills(best_series, "#1b5e20", "#e8f5e9")
+            worst_pills = _make_pct_pills(worst_series, "#7f0000", "#ffebee")
 
     best_block = f"""
       <div style="flex:1;min-width:220px;">
@@ -688,24 +2124,47 @@ def render_ratio_article_block(title, table_df, df, df_filtered,
         go.Scatter(x=MONTHS_LIST, y=display_df["Average"], name="Average %",
                    line=dict(color=RED_LINE, width=3)),
         go.Scatter(x=MONTHS_LIST, y=display_df["Delta"],   name="Δ %",
-                   line=dict(color=ORANGE, dash="dot"), yaxis="y2"),
+                   line=dict(color=ORANGE, dash="dot")),
     ])
+
+    # ✅ Одна спільна вісь Y для всіх показників %:
+    # План %, Факт %, Average % і Δ % більше не розносяться на різні масштаби.
+    y_max = pd.to_numeric(
+        display_df[["Plan", "Fact", "Average", "Delta"]].stack(),
+        errors="coerce"
+    ).replace([np.inf, -np.inf], np.nan).dropna()
+
+    if not y_max.empty:
+        y_min_val = float(y_max.min())
+        y_max_val = float(y_max.max())
+        pad = max(abs(y_min_val), abs(y_max_val), 1) * 0.12
+        y_range = [min(0, y_min_val - pad), max(0, y_max_val + pad)]
+    else:
+        y_range = [0, 1]
+
     fig.update_layout(
         height=320, margin=dict(t=30, b=50, l=10, r=10),
         barmode="group", hovermode="x unified",
-        yaxis=dict(tickformat=".2f", ticksuffix="%"),
-        yaxis2=dict(overlaying="y", side="right", tickformat=".2f",
-                    ticksuffix="%", showgrid=False),
+        yaxis=dict(
+            title="% в ТО",
+            tickformat=".2f",
+            ticksuffix="%",
+            showgrid=True,
+            zeroline=True,
+            range=y_range,
+        ),
         legend=dict(orientation="h", y=-0.18, x=0),
     )
     st.plotly_chart(fig, use_container_width=True, key=f"ratio_chart_{article_idx}_{active_tt}")
+
 
 
 # ── Ratio heatmap section ─────────────────────────────────────────────────────
 
 def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
                                   col_month, col_ratio, col_plf,
-                                  articles_to_show, ratio_mode, group_factors=None):
+                                  articles_to_show, ratio_mode, group_factors=None,
+                                  col_division=None):
     if group_factors is None:
         group_factors = []
 
@@ -726,10 +2185,12 @@ def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
       </span>
     </div>""", unsafe_allow_html=True)
 
+    heat_display = _replace_tt_index_with_division(heat, df_filtered, col_tt, col_division)
+
     st.dataframe(
-        heat.style
+        heat_display.style
             .background_gradient(cmap="RdYlGn_r", axis=None)
-            .highlight_null(color="white")
+            .apply(_style_white_na, axis=None)
             .format(lambda v: f"{v:.2f}%" if pd.notna(v) else "", na_rep=""),
         use_container_width=True,
     )
@@ -746,24 +2207,41 @@ def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
     n_tt    = st.slider("Кількість магазинів (% в ТО)", 1, 100, 10, key="ratio_n_tt_slider")
     top     = sum_val.sort_values(val_col, ascending=True).head(n_tt)
     antitop = sum_val.sort_values(val_col, ascending=False).head(n_tt)
+    top_display = _add_division_display_column(top, df_filtered, col_tt, col_division)
+    antitop_display = _add_division_display_column(antitop, df_filtered, col_tt, col_division)
     fmt_fn  = lambda v: f"{v:.2f}%" if pd.notna(v) else "-"
 
     ca, cb = st.columns(2)
     with ca:
         st.write("✅ Top (найменший %)")
-        st.dataframe(top.style.background_gradient(cmap="RdYlGn", subset=[val_col])
-                        .format({val_col: fmt_fn}), use_container_width=True)
+        st.dataframe(
+            top_display[["Підрозділ", val_col]].set_index("Підрозділ")
+                .style.background_gradient(cmap="RdYlGn", subset=[val_col])
+                .apply(_style_white_na, axis=None)
+                .format({val_col: fmt_fn}),
+            use_container_width=True
+        )
     with cb:
         st.write("❌ Antitop (найбільший %)")
-        st.dataframe(antitop.style.background_gradient(cmap="RdYlGn_r", subset=[val_col])
-                             .format({val_col: fmt_fn}), use_container_width=True)
+        st.dataframe(
+            antitop_display[["Підрозділ", val_col]].set_index("Підрозділ")
+                .style.background_gradient(cmap="RdYlGn_r", subset=[val_col])
+                .apply(_style_white_na, axis=None)
+                .format({val_col: fmt_fn}),
+            use_container_width=True
+        )
 
 
 # ── Excel Export ──────────────────────────────────────────────────────────────
 
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                  col_plf, articles_to_show, tt_val, group_factors, metric_col,
-                 mode, pivot_df, df_tt_agg=None, col_ratio=None):
+                 mode, pivot_df=None, df_tt_agg=None, col_ratio=None,
+                 col_division=None, ratio_mode="Delta"):
+    """
+    Експорт усіх блоків дашборду в Excel.
+    Розрахунки залишаються по col_tt, а для відображення використовується Підрозділ.
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -771,9 +2249,10 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
 
     NUM_FMT = '# ##0;-# ##0;-'
     PCT_FMT = '+0.0%;-0.0%;-'
+    PCT_VALUE_FMT = '0.00"%"'
 
     def hdr_fill(h):
-        h = h.lstrip("#")
+        h = str(h).lstrip("#")
         return PatternFill("solid", start_color=h, end_color=h)
 
     def thin_border():
@@ -783,55 +2262,137 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     def scw(ws, ci, w):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
+    def safe_sheet_name(name):
+        invalid = ['\\', '/', '*', '?', ':', '[', ']']
+        s = str(name) if name is not None else "Аркуш"
+        for ch in invalid:
+            s = s.replace(ch, "_")
+        s = s.strip()[:31] or "Аркуш"
+        base = s[:28]
+        i = 1
+        while s in wb.sheetnames:
+            suffix = f"_{i}"
+            s = (base[:31-len(suffix)] + suffix)[:31]
+            i += 1
+        return s
+
+    def write_df_sheet(title, data, header_color="5b2d8e", index=True,
+                       number_format=NUM_FMT, pct_cols=None, first_col_width=32):
+        ws = wb.create_sheet(safe_sheet_name(title))
+        ws.freeze_panes = "B2"
+        pct_cols = set(pct_cols or [])
+
+        if data is None or data.empty:
+            ws.cell(row=1, column=1, value="Немає даних")
+            return ws
+
+        out = data.copy()
+        if index:
+            out = out.reset_index()
+        out = out.replace([np.inf, -np.inf], np.nan)
+
+        for ci, h in enumerate(out.columns, 1):
+            c = ws.cell(row=1, column=ci, value=str(h))
+            c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
+            c.fill = hdr_fill(header_color)
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            c.border = thin_border()
+        ws.row_dimensions[1].height = 28
+
+        for ri, (_, row) in enumerate(out.iterrows(), 2):
+            for ci, col_name in enumerate(out.columns, 1):
+                v = row[col_name]
+                c = ws.cell(row=ri, column=ci)
+                c.border = thin_border()
+                c.font = Font(name="Arial", size=9)
+                if pd.isna(v):
+                    c.value = None
+                    c.fill = hdr_fill("FFFFFF")
+                elif isinstance(v, (int, float, np.integer, np.floating)):
+                    c.value = float(v)
+                    c.number_format = PCT_VALUE_FMT if str(col_name) in pct_cols or "%" in str(col_name) else number_format
+                    c.alignment = Alignment(horizontal="right")
+                    if float(v) < 0:
+                        c.font = Font(name="Arial", size=9, color="C0392B")
+                else:
+                    c.value = str(v)
+                    c.alignment = Alignment(horizontal="left")
+        ws.column_dimensions["A"].width = first_col_width
+        for ci in range(2, len(out.columns) + 1):
+            scw(ws, ci, 12)
+        return ws
+
+    def display_label(tt_value, display_map):
+        return _tt_display_label(tt_value, display_map) if display_map else tt_value
+
     wb = Workbook()
     wb.remove(wb.active)
+    tt_display_map = _build_tt_display_map(df_filtered, col_tt, col_division)
 
-    # ── 1. Зведена таблиця ──────────────────────────────────────────────────
+    # 1) Зведена таблиця по статтях
     ws_p = wb.create_sheet("Зведена_таблиця")
     ws_p.freeze_panes = "B2"
     header = ["Стаття"] + MONTHS_LIST + ["РАЗОМ"]
     for ci, h in enumerate(header, 1):
         c = ws_p.cell(row=1, column=ci, value=h)
-        c.font      = Font(bold=True, color="FFFFFF", name="Arial", size=10)
-        c.fill      = hdr_fill("2e7d32")
+        c.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+        c.fill = hdr_fill("2e7d32")
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border    = thin_border()
+        c.border = thin_border()
     ws_p.row_dimensions[1].height = 28
     ws_p.column_dimensions["A"].width = 36
     for ci in range(2, len(header) + 1):
         scw(ws_p, ci, 11)
 
     for ri, article in enumerate(articles_to_show, 2):
-        tdf  = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                     col_month, col_value, col_plf, article, tt_val, group_factors)
+        tdf = build_article_monthly(
+            df, df_filtered, col_tt, col_article, col_month,
+            col_value, col_plf, article, tt_val, group_factors
+        )
         vals = [article] + [tdf.loc[m, metric_col] for m in range(1, 13)]
         vals.append(sum(tdf.loc[m, metric_col] for m in range(1, 13)))
         for ci, v in enumerate(vals, 1):
             c = ws_p.cell(row=ri, column=ci, value=v)
             c.border = thin_border()
-            c.font   = Font(name="Arial", size=9)
+            c.font = Font(name="Arial", size=9)
             if ci == 1:
                 c.alignment = Alignment(horizontal="left")
             else:
                 c.number_format = NUM_FMT
-                c.alignment     = Alignment(horizontal="right")
-                if isinstance(v, (int, float)) and v < 0:
+                c.alignment = Alignment(horizontal="right")
+                if isinstance(v, (int, float, np.integer, np.floating)) and v < 0:
                     c.font = Font(name="Arial", size=9, color="C0392B")
 
-    # ── 2. Листи по статтях ─────────────────────────────────────────────────
+    # 2) Всі основні блоки одним листом
+    main_rows = []
+    for article in articles_to_show:
+        tdf = build_article_monthly(
+            df, df_filtered, col_tt, col_article, col_month,
+            col_value, col_plf, article, tt_val, group_factors
+        )
+        for label, key in [("План", "Plan"), ("Факт", "Fact"), ("Average", "Average"), ("Дельта", "Delta")]:
+            row = {"Стаття": article, "Показник": label}
+            vals = [tdf.loc[m, key] for m in range(1, 13)]
+            for m in range(1, 13):
+                row[MONTH_LABELS[m]] = tdf.loc[m, key]
+            row["РАЗОМ"] = sum(vals)
+            main_rows.append(row)
+    write_df_sheet("Основні_таблиці", pd.DataFrame(main_rows), index=False, header_color="2e7d32")
+
+    # 3) Окремі листи по кожній статті + графік
     row_labels = ["План", "Факт", "Average", "Дельта"]
-    row_keys   = ["Plan", "Fact", "Average", "Delta"]
-    row_fills  = ["FFFFFF", "e8d5f5", "fde8e8", "fff9e0"]
+    row_keys = ["Plan", "Fact", "Average", "Delta"]
+    row_fills = ["FFFFFF", "e8d5f5", "fde8e8", "fff9e0"]
     row_colors = ["333333", "5b2d8e", "c0392b", "b8860b"]
 
     for article in articles_to_show:
-        tdf  = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                     col_month, col_value, col_plf, article, tt_val, group_factors)
-        safe = article[:28].replace("/", "_").replace("\\", "_")
-        ws   = wb.create_sheet(safe)
+        tdf = build_article_monthly(
+            df, df_filtered, col_tt, col_article,
+            col_month, col_value, col_plf, article, tt_val, group_factors
+        )
+        ws = wb.create_sheet(safe_sheet_name(article))
         ws.freeze_panes = "B3"
-
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=15)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=14)
         tc = ws.cell(row=1, column=1, value=article)
         tc.font = Font(bold=True, color="FFFFFF", name="Arial", size=12)
         tc.fill = hdr_fill("5b2d8e")
@@ -841,15 +2402,13 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         headers = ["Показник"] + MONTHS_LIST + ["РАЗОМ"]
         for ci, h in enumerate(headers, 1):
             c = ws.cell(row=2, column=ci, value=h)
-            c.font      = Font(bold=True, color="FFFFFF", name="Arial", size=9)
-            c.fill      = hdr_fill("2e7d32")
+            c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
+            c.fill = hdr_fill("2e7d32")
             c.alignment = Alignment(horizontal="center", vertical="center")
-            c.border    = thin_border()
-        ws.row_dimensions[2].height = 18
+            c.border = thin_border()
 
-        for ri, (label, key, fill_hex, color_hex) in enumerate(
-                zip(row_labels, row_keys, row_fills, row_colors), 3):
-            vals  = [tdf.loc[m, key] for m in range(1, 13)]
+        for ri, (label, key, fill_hex, color_hex) in enumerate(zip(row_labels, row_keys, row_fills, row_colors), 3):
+            vals = [tdf.loc[m, key] for m in range(1, 13)]
             total = sum(vals)
             nc = ws.cell(row=ri, column=1, value=label)
             nc.font = Font(bold=True, color=color_hex, name="Arial", size=9)
@@ -857,42 +2416,32 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             nc.border = thin_border()
             nc.alignment = Alignment(horizontal="left")
             for ci, v in enumerate(vals, 2):
-                c = ws.cell(row=ri, column=ci, value=v)
+                c = ws.cell(row=ri, column=ci, value=float(v) if pd.notna(v) else None)
                 c.number_format = NUM_FMT
-                c.fill   = hdr_fill(fill_hex)
+                c.fill = hdr_fill(fill_hex)
                 c.border = thin_border()
                 c.alignment = Alignment(horizontal="right")
-                c.font = Font(name="Arial", size=9, color="C0392B" if v < 0 else color_hex)
-            tc2 = ws.cell(row=ri, column=14, value=total)
+                c.font = Font(name="Arial", size=9, color="C0392B" if pd.notna(v) and v < 0 else color_hex)
+            tc2 = ws.cell(row=ri, column=14, value=float(total) if pd.notna(total) else None)
             tc2.number_format = NUM_FMT
-            tc2.fill   = hdr_fill(fill_hex)
+            tc2.fill = hdr_fill(fill_hex)
             tc2.border = thin_border()
             tc2.alignment = Alignment(horizontal="right")
-            tc2.font = Font(bold=True, name="Arial", size=9,
-                            color="C0392B" if total < 0 else color_hex)
+            tc2.font = Font(bold=True, name="Arial", size=9, color="C0392B" if total < 0 else color_hex)
 
         ws.column_dimensions["A"].width = 12
         for ci in range(2, 15):
             scw(ws, ci, 11)
 
         fig = go.Figure([
-            go.Bar(x=MONTHS_LIST, y=[tdf.loc[m, "Plan"] for m in range(1, 13)],
-                   name="План", marker_color="#c0c0c0", opacity=0.9),
-            go.Bar(x=MONTHS_LIST, y=[tdf.loc[m, "Fact"] for m in range(1, 13)],
-                   name="Факт", marker_color="#5b2d8e", opacity=0.95),
-            go.Scatter(x=MONTHS_LIST, y=[tdf.loc[m, "Average"] for m in range(1, 13)],
-                       mode="lines+markers", name="Average",
-                       line=dict(color="#c0392b", width=2.5), marker=dict(size=8)),
-            go.Scatter(x=MONTHS_LIST, y=[tdf.loc[m, "Delta"] for m in range(1, 13)],
-                       mode="lines+markers", name="Дельта",
-                       line=dict(color="#f0c000", width=2), marker=dict(size=7), yaxis="y2"),
+            go.Bar(x=MONTHS_LIST, y=[tdf.loc[m, "Plan"] for m in range(1, 13)], name="План", marker_color="#c0c0c0"),
+            go.Bar(x=MONTHS_LIST, y=[tdf.loc[m, "Fact"] for m in range(1, 13)], name="Факт", marker_color="#5b2d8e"),
+            go.Scatter(x=MONTHS_LIST, y=[tdf.loc[m, "Average"] for m in range(1, 13)], mode="lines+markers", name="Average", line=dict(color="#c0392b", width=2.5)),
+            go.Scatter(x=MONTHS_LIST, y=[tdf.loc[m, "Delta"] for m in range(1, 13)], mode="lines+markers", name="Дельта", line=dict(color="#f0c000", width=2), yaxis="y2"),
         ])
         fig.update_layout(
-            barmode="group", height=320, width=900,
-            plot_bgcolor="white", paper_bgcolor="white",
+            barmode="group", height=320, width=900, plot_bgcolor="white", paper_bgcolor="white",
             title=dict(text=f"Аналіз — {article}", x=0.5, font=dict(size=12)),
-            xaxis=dict(showgrid=False),
-            yaxis=dict(showgrid=True, gridcolor="#ececec"),
             yaxis2=dict(overlaying="y", side="right", showgrid=False),
             legend=dict(orientation="v", x=1.06, y=1, font=dict(size=9)),
             margin=dict(t=40, b=30, l=55, r=130), font=dict(family="Arial"),
@@ -905,250 +2454,143 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         except Exception:
             ws.cell(row=7, column=1, value="⚠️ Графік недоступний (pip install kaleido)")
 
-    # ── 3. % в ТО ───────────────────────────────────────────────────────────
+    # 4) % в ТО: основні блоки + зведена
     if col_ratio:
-        ws_ratio = wb.create_sheet("% в ТО_зведена")
-        ws_ratio.freeze_panes = "B2"
-        r_header = ["Стаття"] + MONTHS_LIST + ["Серед."]
-        for ci, h in enumerate(r_header, 1):
-            c = ws_ratio.cell(row=1, column=ci, value=h)
-            c.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
-            c.fill = hdr_fill("085f63")
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            c.border = thin_border()
-        ws_ratio.row_dimensions[1].height = 28
-        ws_ratio.column_dimensions["A"].width = 36
-        for ci in range(2, len(r_header) + 1):
-            scw(ws_ratio, ci, 11)
-
-        r_cfg = [
-            ("План %",    "Plan",    "e8f8f8", "085f63"),
-            ("Факт %",    "Fact",    "d0f0f0", "0d7377"),
-            ("Average %", "Average", "fde8e8", "c0392b"),
-            ("Δ %",       "Delta",   "fff9e0", "e67e22"),
-        ]
-        for art_ri, article in enumerate(articles_to_show):
+        ratio_rows = []
+        ratio_summary_rows = []
+        for article in articles_to_show:
             rdf = build_ratio_monthly(
                 df_filtered, col_tt, col_article, col_month,
                 col_ratio, col_plf, article, tt_val,
                 df_all=df, group_factors=group_factors
             )
-            base_row = 2 + art_ri * 5
-            ws_ratio.merge_cells(start_row=base_row, start_column=1,
-                                  end_row=base_row, end_column=len(r_header))
-            tc = ws_ratio.cell(row=base_row, column=1, value=article)
-            tc.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
-            tc.fill = hdr_fill("0d7377")
-            tc.alignment = Alignment(horizontal="left", vertical="center")
-            ws_ratio.row_dimensions[base_row].height = 18
+            for label, key in [("План %", "Plan"), ("Факт %", "Fact"), ("Average %", "Average"), ("Δ %", "Delta")]:
+                row = {"Стаття": article, "Показник": label}
+                vals = [rdf.loc[m, key] for m in range(1, 13)]
+                for m in range(1, 13):
+                    row[MONTH_LABELS[m]] = rdf.loc[m, key]
+                nz = [v for v in vals if v != 0]
+                row["Серед."] = np.mean(nz) if nz else 0.0
+                ratio_rows.append(row)
 
-            for sub_ri, (label, key, fill_hex, color_hex) in enumerate(r_cfg, base_row + 1):
-                vals    = [rdf.loc[m, key] for m in range(1, 13)]
-                nz      = [v for v in vals if v != 0]
-                summary = np.mean(nz) if nz else 0.0
-                nc = ws_ratio.cell(row=sub_ri, column=1, value=label)
-                nc.font = Font(bold=True, color=color_hex, name="Arial", size=9)
-                nc.fill = hdr_fill(fill_hex)
-                nc.border = thin_border()
-                for ci, v in enumerate(vals, 2):
-                    c = ws_ratio.cell(row=sub_ri, column=ci, value=round(v, 4))
-                    c.number_format = '0.00"%"'
-                    c.fill = hdr_fill(fill_hex)
-                    c.border = thin_border()
-                    c.alignment = Alignment(horizontal="right")
-                    c.font = Font(name="Arial", size=9,
-                                  color="C0392B" if v < 0 else color_hex)
-                sc = ws_ratio.cell(row=sub_ri, column=14, value=round(summary, 4))
-                sc.number_format = '0.00"%"'
-                sc.fill = hdr_fill(fill_hex)
-                sc.border = thin_border()
-                sc.alignment = Alignment(horizontal="right")
-                sc.font = Font(bold=True, name="Arial", size=9,
-                               color="C0392B" if summary < 0 else color_hex)
+            row = {"Стаття": article}
+            vals = [rdf.loc[m, "Fact"] for m in range(1, 13)]
+            for m in range(1, 13):
+                row[MONTH_LABELS[m]] = vals[m-1]
+            nz = [v for v in vals if v != 0]
+            row["Серед."] = np.mean(nz) if nz else 0.0
+            ratio_summary_rows.append(row)
 
-    # ── 4. ТТ-Зведена ───────────────────────────────────────────────────────
+        write_df_sheet("Основні_%_в_ТО", pd.DataFrame(ratio_rows), index=False, header_color="085f63")
+        write_df_sheet("% в ТО_зведена", pd.DataFrame(ratio_summary_rows).set_index("Стаття"), header_color="085f63")
+
+    # 5) Зведена по Підрозділ
     if df_tt_agg is not None and not df_tt_agg.empty:
-        ws_tt = wb.create_sheet("ТТ_Зведена")
-        ws_tt.freeze_panes = "B2"
+        df_tt_export = df_tt_agg.copy()
+        if "ТТ" in df_tt_export.columns:
+            df_tt_export["Підрозділ"] = df_tt_export["ТТ"].map(lambda v: display_label(v, tt_display_map))
+            rest_cols = [c for c in df_tt_export.columns if c not in ("Підрозділ", "ТТ")]
+            df_tt_export = ["Підрозділ"] and df_tt_export[["Підрозділ"] + rest_cols]
+        write_df_sheet("Підрозділ_Зведена", df_tt_export, index=False, header_color="5b2d8e")
 
-        tt_export_cols = (
-            ["ТТ"]
-            + [f"fact_{MONTH_LABELS[m]}" for m in range(1, 13)]
-            + [f"plan_{MONTH_LABELS[m]}" for m in range(1, 13)]
-            + [f"delta_{MONTH_LABELS[m]}" for m in range(1, 13)]
-            + ["Fact_РАЗОМ", "Plan_РАЗОМ", "Delta_РАЗОМ", "Pct_РАЗОМ"]
-        )
-        tt_export_cols = [c for c in tt_export_cols if c in df_tt_agg.columns]
-
-        tt_lbl = {"ТТ": "ТТ", "Fact_РАЗОМ": "Fact РАЗОМ", "Plan_РАЗОМ": "Plan РАЗОМ",
-                  "Delta_РАЗОМ": "Δ РАЗОМ", "Pct_РАЗОМ": "% відхил."}
-        for m in range(1, 13):
-            ml = MONTH_LABELS[m]
-            tt_lbl.update({f"fact_{ml}": f"{ml} Fact", f"plan_{ml}": f"{ml} Plan",
-                           f"delta_{ml}": f"{ml} Δ"})
-
-        header_row = [tt_lbl.get(c, c) for c in tt_export_cols]
-        for ci, h in enumerate(header_row, 1):
-            c = ws_tt.cell(row=1, column=ci, value=h)
-            c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
-            c.fill = hdr_fill("5b2d8e")
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            c.border = thin_border()
-        ws_tt.row_dimensions[1].height = 28
-        ws_tt.column_dimensions["A"].width = 22
-        for ci in range(2, len(header_row) + 1):
-            scw(ws_tt, ci, 10)
-
-        df_tt_sorted = df_tt_agg[tt_export_cols].sort_values(
-            "Delta_РАЗОМ" if "Delta_РАЗОМ" in df_tt_agg.columns else tt_export_cols[1],
-            ascending=False
-        ).reset_index(drop=True)
-
-        for ri, row in df_tt_sorted.iterrows():
-            for ci, col_name in enumerate(tt_export_cols, 1):
-                v = row[col_name]
-                c = ws_tt.cell(row=ri + 2, column=ci)
-                c.border = thin_border()
-                c.font   = Font(name="Arial", size=9)
-                if col_name == "ТТ":
-                    c.value = str(v) if pd.notna(v) else ""
-                    c.alignment = Alignment(horizontal="left")
-                elif col_name == "Pct_РАЗОМ":
-                    c.value = float(v) / 100 if pd.notna(v) else None
-                    c.number_format = PCT_FMT
-                    c.alignment = Alignment(horizontal="right")
-                    if pd.notna(v):
-                        c.font = Font(name="Arial", size=9,
-                                      color="C0392B" if v > 0 else ("2E7D32" if v < 0 else "000000"))
-                else:
-                    c.value = float(v) if pd.notna(v) else None
-                    c.number_format = NUM_FMT
-                    c.alignment = Alignment(horizontal="right")
-                    if pd.notna(v) and isinstance(v, (int, float)) and v < 0:
-                        c.font = Font(name="Arial", size=9, color="C0392B")
-
-        total_ri = len(df_tt_sorted) + 2
-        for ci, col_name in enumerate(tt_export_cols, 1):
-            c = ws_tt.cell(row=total_ri, column=ci)
-            c.border = thin_border()
-            c.font   = Font(bold=True, name="Arial", size=9)
-            c.fill   = hdr_fill("e8d5f5")
-            if col_name == "ТТ":
-                c.value = "🟰 РАЗОМ"
-                c.alignment = Alignment(horizontal="left")
-            elif col_name == "Pct_РАЗОМ":
-                plan_s = df_tt_sorted["Plan_РАЗОМ"].sum() if "Plan_РАЗОМ" in df_tt_sorted else 0
-                fact_s = df_tt_sorted["Fact_РАЗОМ"].sum() if "Fact_РАЗОМ" in df_tt_sorted else 0
-                c.value = (fact_s / plan_s - 1) if plan_s != 0 else None
-                c.number_format = PCT_FMT
-                c.alignment = Alignment(horizontal="right")
-            else:
-                s = df_tt_sorted[col_name].sum() if col_name in df_tt_sorted else 0
-                c.value = float(s) if pd.notna(s) else None
-                c.number_format = NUM_FMT
-                c.alignment = Alignment(horizontal="right")
-
-    # ── 5. Heatmap ──────────────────────────────────────────────────────────
+    # 6) Heatmap + TOP/ANTITOP абсолютні
     if group_factors:
         heat, tt_table, val_col = build_heat_data(
             df, df_filtered, col_tt, col_article, col_month, col_value,
             col_plf, group_factors, articles_to_show, mode
         )
-        ws_h = wb.create_sheet("Heatmap")
-        ws_h.freeze_panes = "B2"
-        heat_header = [col_tt] + MONTHS_LIST + ["РАЗОМ"]
-        for ci, h in enumerate(heat_header, 1):
-            c = ws_h.cell(row=1, column=ci, value=h)
-            c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
-            c.fill = hdr_fill("5b2d8e")
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.border = thin_border()
+        heat_display = _replace_tt_index_with_division(heat, df_filtered, col_tt, col_division)
+        write_df_sheet("Heatmap", heat_display, header_color="5b2d8e")
 
-        try:
-            import matplotlib.pyplot as plt
-            import matplotlib.colors as mcolors
-            flat = heat.values.flatten().astype(float)
-            flat = flat[~np.isnan(flat)]
-            norm = mcolors.Normalize(vmin=float(np.nanmin(flat)), vmax=float(np.nanmax(flat)))
-            cmap_obj = plt.get_cmap("RdYlGn_r")
-            use_cmap = True
-        except Exception:
-            use_cmap = False
+        sum_val = tt_table.groupby(col_tt)[val_col].sum().reset_index()
+        sum_val["Підрозділ"] = sum_val[col_tt].map(lambda v: display_label(v, tt_display_map))
+        top_df = sum_val.sort_values(val_col, ascending=True).head(50)[["Підрозділ", val_col]]
+        anti_df = sum_val.sort_values(val_col, ascending=False).head(50)[["Підрозділ", val_col]]
+        top_anti = pd.concat({"TOP_економія": top_df.reset_index(drop=True), "ANTITOP_переліміт": anti_df.reset_index(drop=True)}, axis=1)
+        write_df_sheet("TOP_ANTITOP", top_anti, index=False, header_color="5b2d8e")
 
-        for ri, (idx, row) in enumerate(heat.iterrows(), 2):
-            ws_h.cell(row=ri, column=1, value=idx).border = thin_border()
-            ws_h.cell(row=ri, column=1).font = Font(name="Arial", size=9)
-            for ci, col_name in enumerate(heat.columns, 2):
-                v = row[col_name]
-                c = ws_h.cell(row=ri, column=ci)
-                c.border = thin_border()
-                c.alignment = Alignment(horizontal="right")
-                if pd.isna(v):
-                    c.fill = hdr_fill("FFFFFF")
-                else:
-                    c.value = float(v)
-                    c.number_format = NUM_FMT
-                    if use_cmap:
-                        rgba = cmap_obj(norm(float(v)))
-                        hx = "{:02X}{:02X}{:02X}".format(
-                            int(rgba[0]*255), int(rgba[1]*255), int(rgba[2]*255))
-                        c.fill = hdr_fill(hx)
-                    c.font = Font(name="Arial", size=9, color="000000")
+        # 7) Heatmap + TOP/ANTITOP % в ТО
+        if col_ratio:
+            heat_r, tt_table_r, val_col_r = build_ratio_heat_data(
+                df, df_filtered, col_tt, col_article, col_month,
+                col_ratio, col_plf, articles_to_show, ratio_mode,
+                group_factors=group_factors
+            )
+            heat_r_display = _replace_tt_index_with_division(heat_r, df_filtered, col_tt, col_division)
+            write_df_sheet("Heatmap_%_ТО", heat_r_display, header_color="085f63", number_format=PCT_VALUE_FMT)
 
-        ws_h.column_dimensions["A"].width = 20
-        for ci in range(2, len(heat_header) + 1):
-            scw(ws_h, ci, 11)
+            sum_val_r = tt_table_r.groupby(col_tt)[val_col_r].mean().reset_index()
+            sum_val_r["Підрозділ"] = sum_val_r[col_tt].map(lambda v: display_label(v, tt_display_map))
+            top_r = sum_val_r.sort_values(val_col_r, ascending=True).head(50)[["Підрозділ", val_col_r]]
+            anti_r = sum_val_r.sort_values(val_col_r, ascending=False).head(50)[["Підрозділ", val_col_r]]
+            top_anti_r = pd.concat({"TOP_%": top_r.reset_index(drop=True), "ANTITOP_%": anti_r.reset_index(drop=True)}, axis=1)
+            write_df_sheet("TOP_ANTITOP_%_ТО", top_anti_r, index=False, header_color="085f63", number_format=PCT_VALUE_FMT)
 
-        ws_top    = wb.create_sheet("TOP_ANTITOP")
-        sum_val   = tt_table.groupby(col_tt)[val_col].sum().reset_index()
-        top_df    = sum_val.sort_values(val_col, ascending=True).head(50)
-        anti_df   = sum_val.sort_values(val_col, ascending=False).head(50)
+        # 8) Аналіз комбінації факторів
+        combo_rows = []
+        combo_ratio_rows = []
+        selected_factors = list(group_factors)
+        combo_col = "Комбінація факторів"
+        for article in articles_to_show:
+            art_all = _prep(df[df[col_article] == article].copy(), col_month)
+            all_fact = _fact_rows(art_all, col_plf).copy()
+            if selected_factors and not all_fact.empty:
+                all_fact[col_value] = pd.to_numeric(all_fact[col_value], errors="coerce")
+                all_fact[combo_col] = all_fact[selected_factors].astype(str).agg(" | ".join, axis=1)
+                combo_impact = all_fact.groupby([combo_col, "_m"], as_index=False)[col_value].agg(
+                    Середнє="mean", Кількість="count", Сума="sum", Відхилення="std"
+                )
+                combo_impact["Стаття"] = article
+                combo_impact["Місяць"] = combo_impact["_m"].map(MONTH_LABELS)
+                combo_rows.append(combo_impact[["Стаття", combo_col, "Місяць", "Середнє", "Кількість", "Сума", "Відхилення"]])
 
-        def write_block(start_col, title_text, df_block, cmap_name):
-            tc2 = ws_top.cell(row=1, column=start_col, value=title_text)
-            tc2.font = Font(bold=True, color="FFFFFF", name="Arial", size=11)
-            tc2.fill = hdr_fill("5b2d8e")
-            ws_top.merge_cells(start_row=1, start_column=start_col,
-                               end_row=1, end_column=start_col + 1)
-            for ci2, h2 in enumerate([col_tt, val_col], start_col):
-                c = ws_top.cell(row=2, column=ci2, value=h2)
-                c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
-                c.fill = hdr_fill("2e7d32")
-                c.border = thin_border()
-            try:
-                import matplotlib.pyplot as plt
-                import matplotlib.colors as mcolors
-                vals_arr = df_block[val_col].values.astype(float)
-                nm   = mcolors.Normalize(vmin=float(np.nanmin(vals_arr)),
-                                         vmax=float(np.nanmax(vals_arr)))
-                cm2  = plt.get_cmap(cmap_name)
-                use_c = True
-            except Exception:
-                use_c = False
-            for ri2, row2 in enumerate(df_block.itertuples(index=False), 3):
-                tt_v  = getattr(row2, col_tt, "")
-                val_v = getattr(row2, val_col, 0)
-                ws_top.cell(row=ri2, column=start_col, value=tt_v).border = thin_border()
-                ws_top.cell(row=ri2, column=start_col).font = Font(name="Arial", size=9)
-                c2 = ws_top.cell(row=ri2, column=start_col + 1,
-                                  value=float(val_v) if pd.notna(val_v) else None)
-                c2.number_format = NUM_FMT
-                c2.border = thin_border()
-                c2.alignment = Alignment(horizontal="right")
-                if use_c and pd.notna(val_v):
-                    rgba2 = cm2(nm(float(val_v)))
-                    hx2 = "{:02X}{:02X}{:02X}".format(
-                        int(rgba2[0]*255), int(rgba2[1]*255), int(rgba2[2]*255))
-                    c2.fill = hdr_fill(hx2)
-                    lum = (0.299*int(rgba2[0]*255) + 0.587*int(rgba2[1]*255)
-                           + 0.114*int(rgba2[2]*255)) / 255
-                    c2.font = Font(name="Arial", size=9,
-                                   color="000000" if lum > 0.5 else "FFFFFF")
-            ws_top.column_dimensions[get_column_letter(start_col)].width = 22
-            ws_top.column_dimensions[get_column_letter(start_col + 1)].width = 14
+            if col_ratio and selected_factors:
+                art_all_r = _prep(df[df[col_article] == article].copy(), col_month)
+                all_fact_r = _fact_rows(art_all_r, col_plf).copy()
+                if not all_fact_r.empty and col_ratio in all_fact_r.columns:
+                    all_fact_r[col_ratio] = pd.to_numeric(all_fact_r[col_ratio], errors="coerce")
+                    all_fact_r[combo_col] = all_fact_r[selected_factors].astype(str).agg(" | ".join, axis=1)
+                    combo_r = all_fact_r.groupby([combo_col, "_m"], as_index=False)[col_ratio].agg(
+                        Середнє="mean", Кількість="count", Сума="sum", Відхилення="std"
+                    )
+                    combo_r["Стаття"] = article
+                    combo_r["Місяць"] = combo_r["_m"].map(MONTH_LABELS)
+                    combo_ratio_rows.append(combo_r[["Стаття", combo_col, "Місяць", "Середнє", "Кількість", "Сума", "Відхилення"]])
 
-        write_block(1, "✅ TOP (економія)",      top_df,  "RdYlGn")
-        write_block(4, "❌ ANTITOP (переліміт)", anti_df, "RdYlGn_r")
+        if combo_rows:
+            write_df_sheet("Комбінації_факторів", pd.concat(combo_rows, ignore_index=True), index=False, header_color="e67e22")
+        if combo_ratio_rows:
+            write_df_sheet("Комбінації_%_ТО", pd.concat(combo_ratio_rows, ignore_index=True), index=False, header_color="e67e22", number_format=PCT_VALUE_FMT)
+
+    # 9) Статистичний аналіз факторів
+    if group_factors:
+        stat_rows = []
+        combo_stat_rows = []
+        for article in articles_to_show:
+            stat_df, _ = analyze_statistical_factor_models(df, col_article, col_value, col_plf, article, group_factors)
+            if stat_df is not None and not stat_df.empty:
+                stat_df = stat_df.copy()
+                stat_df.insert(0, "Стаття", article)
+                stat_rows.append(stat_df)
+
+            combo_factors = group_factors[:min(2, len(group_factors))]
+            combo_stat, _ = analyze_combination_statistical_impact(df, col_article, col_value, col_plf, article, combo_factors)
+            if combo_stat is not None and not combo_stat.empty:
+                combo_stat = combo_stat.copy()
+                combo_stat.insert(0, "Стаття", article)
+                combo_stat_rows.append(combo_stat)
+
+        if stat_rows:
+            write_df_sheet("Статистика_факторів", pd.concat(stat_rows, ignore_index=True), index=False, header_color="2c3e50")
+        if combo_stat_rows:
+            write_df_sheet("Статистика_комбінацій", pd.concat(combo_stat_rows, ignore_index=True), index=False, header_color="2c3e50")
+
+    # 10) Дані після фільтрів
+    raw = df_filtered.copy()
+    if col_tt in raw.columns:
+        raw.insert(0, "Підрозділ_відображення", raw[col_tt].map(lambda v: display_label(v, tt_display_map)))
+    if len(raw) <= 50000:
+        write_df_sheet("Дані_після_фільтрів", raw, index=False, header_color="607d8b", first_col_width=28)
 
     output = io.BytesIO()
     wb.save(output)
@@ -1167,7 +2609,7 @@ def main():
     .simi-logo   { font-size:2rem;font-weight:900;color:#f0c000;letter-spacing:1px;
                    margin-right:24px;vertical-align:middle; }
     .simi-store  { font-size:1.1rem;font-weight:700;color:white;vertical-align:middle; }
-    .simi-meta-grid { display:grid;grid-template-columns:repeat(6,1fr);gap:4px 12px;margin-top:6px; }
+    .simi-meta-grid { display:grid;grid-template-columns:repeat(5,1fr);gap:4px 12px;margin-top:6px; }
     .simi-meta-item { font-size:0.78rem;color:#e0d0f8; }
     .simi-meta-val  { font-size:0.85rem;font-weight:700;color:white; }
     .article-selector { background:#f4f0fa;border:2px solid #5b2d8e;
@@ -1192,45 +2634,65 @@ def main():
     sheet_name = st.selectbox("Аркуш", xl.sheet_names)
     df         = load_excel(file_bytes, file.name, sheet_name)
     cols       = df.columns.tolist()
+    _init_column_state(df, file.name, sheet_name)
 
-    with st.expander("⚙️ Налаштування колонок", expanded=True):
-        c1, c2, c3, c4, c5 = st.columns(5)
+    with st.expander("⚙️ Налаштування колонок", expanded=False):
+        st.caption("Колонки утотожнюються автоматично за назвою. За потреби їх можна змінити вручну.")
+
+        if st.button("🔄 Автоутотожнити колонки", key="remap_columns_btn"):
+            auto_cols = auto_map_columns(df)
+            for key, val in auto_cols.items():
+                st.session_state[key] = val if val in cols else None
+            st.rerun()
+
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
-            col_tt   = st.selectbox("TT (Магазин)", cols)
-            col_year = st.selectbox("Year",          cols)
+            col_tt   = _select_col("TT (Магазин)", cols, "col_tt")
+            col_year = _select_col("Year", cols, "col_year")
         with c2:
-            col_month   = st.selectbox("Month",    cols)
-            col_value   = st.selectbox("Значення", cols)
+            col_month = _select_col("Month", cols, "col_month")
+            col_value = _select_col("Значення", cols, "col_value")
         with c3:
-            col_plf     = st.selectbox("PL / F",         cols)
-            col_article = st.selectbox("Стаття бюджету", cols)
+            col_plf     = _select_col("PL / F", cols, "col_plf")
+            col_article = _select_col("Стаття бюджету", cols, "col_article")
         with c4:
-            col_level0 = st.selectbox("Level_0", cols)
-            ratio_candidates = ["— не обрано —"] + cols
-            default_ratio_idx = 0
-            for i, c in enumerate(cols):
-                if "%" in c and "то" in c.lower():
-                    default_ratio_idx = i + 1
-                    break
-            col_ratio = st.selectbox(
-                "% в ТО без акцизу та без ПДВ", ratio_candidates,
-                index=default_ratio_idx,
-                help="Колонка з відсотком % в ТО. Оберіть 'не обрано' щоб приховати блок."
+            col_level0 = _select_col("Level_0", cols, "col_level0")
+            col_ratio = _select_col(
+                "% в ТО без акцизу та без ПДВ",
+                cols,
+                "col_ratio",
+                allow_empty=True,
+                help="Колонка з відсотком % в ТО. Оберіть '—', щоб приховати блок."
             )
-            if col_ratio == "— не обрано —":
-                col_ratio = None
 
     with st.expander("🏪 Колонки шапки магазину", expanded=False):
+        st.caption("Колонки шапки також утотожнюються автоматично, але їх можна змінити вручну.")
         sh1, sh2, sh3 = st.columns(3)
         with sh1:
-            col_city  = st.selectbox("Місто",  ["—"] + cols)
-            col_area  = st.selectbox("Площа",  ["—"] + cols)
+            col_city = _select_col("Місто", cols, "col_city", allow_empty=True)
+            col_area = _select_col("Площа", cols, "col_area", allow_empty=True)
         with sh2:
-            col_format = st.selectbox("Формат ТО",   ["—"] + cols)
-            col_mega   = st.selectbox("Мегасегмент", ["—"] + cols)
+            col_format = _select_col("Формат ТО", cols, "col_format", allow_empty=True)
+            col_format2 = _select_col("Формат2", cols, "col_format2", allow_empty=True)
         with sh3:
-            col_rik = st.selectbox("Рік",            ["—"] + cols)
-            col_mis = st.selectbox("Місяць (шапка)", ["—"] + cols)
+            col_division = _select_col("Підрозділ (назва в шапці)", cols, "col_division", allow_empty=True)
+            col_rik = _select_col("Рік", cols, "col_rik", allow_empty=True)
+            col_mega = _select_col("Мегасегмент (резерв)", cols, "col_mega", allow_empty=True)
+        col_mis = None  # Місяць у шапці не показуємо
+
+    required_cols = {
+        "TT (Магазин)": col_tt,
+        "Year": col_year,
+        "Month": col_month,
+        "Значення": col_value,
+        "PL / F": col_plf,
+        "Стаття бюджету": col_article,
+        "Level_0": col_level0,
+    }
+    missing_required = [name for name, value in required_cols.items() if not value]
+    if missing_required:
+        st.error("Не утотожнено обов’язкові колонки: " + ", ".join(missing_required))
+        st.stop()
 
     # Sidebar
     st.sidebar.markdown("## 🔍 Фільтри")
@@ -1239,11 +2701,11 @@ def main():
     level0_val = st.sidebar.multiselect("Level_0", sorted(df[col_level0].dropna().unique(), key=str))
 
     st.sidebar.markdown("### ➕ Додаткові фільтри")
-    fixed_cols  = {col_tt, col_year, col_month, col_level0}
+    fixed_cols    = {col_tt, col_year, col_month, col_level0}
     extra_filters = {}
 
     remaining = [c for c in cols if c not in fixed_cols]
-    for i in range(1, 4):
+    for i in range(1, 7):
         key_col = f"extra_filter_col{i}"
         key_val = f"extra_filter_val{i}"
         prev_extra = list(extra_filters.keys())
@@ -1259,7 +2721,7 @@ def main():
         else:
             break
 
-    # Pre-filter for TT list
+    # Pre-filter for TT list (без впливу на df — повний датасет зберігається)
     df_pre = df.copy()
     if year_val:   df_pre = df_pre[df_pre[col_year].isin(year_val)]
     if month_val:  df_pre = df_pre[df_pre[col_month].isin(month_val)]
@@ -1295,16 +2757,14 @@ def main():
     st.sidebar.markdown("---")
     mode       = st.sidebar.selectbox("Mode (Heatmap)",       ["Delta", "Delta %", "Z-score", "Fact", "Average"])
     ratio_mode = st.sidebar.selectbox("Mode (% в ТО Heatmap)", ["Delta", "Delta %", "Fact", "Average"], key="ratio_mode")
-    
+
     options = [c for c in df.columns if c not in [col_value, col_plf, col_article]]
-
     group_factors = st.sidebar.multiselect(
-    "Фактори групування (Average/Std)",
-    options=options,
-    default=[col_tt] if col_tt in options else [],   # перевірка, чи є col_tt серед options
-    placeholder="Оберіть стовпці"
+        "Фактори групування (Average/Std)",
+        options=options,
+        default=[col_tt] if col_tt in options else [],
+        placeholder="Оберіть стовпці"
     )
-
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 👁️ Відображення")
@@ -1315,6 +2775,7 @@ def main():
 
     df[col_value] = pd.to_numeric(df[col_value], errors="coerce")
 
+    # ── apply_filters: df залишається ПОВНИМ (для норм), df_filtered — для відображення ──
     def apply_filters(d):
         if tt_val:     d = d[d[col_tt].isin(tt_val)]
         if year_val:   d = d[d[col_year].isin(year_val)]
@@ -1326,11 +2787,59 @@ def main():
 
     df_filtered = apply_filters(df).copy()
 
+    def _get_active_single_tt_from_filter_or_slicer():
+        """
+        Повертає один активний ТТ тільки якщо він вибраний:
+        1) у боковому фільтрі ТТ; або
+        2) у компактному слайсері на вкладці аналізу.
+        Якщо вибрано 0 або більше 1 ТТ — повертає None.
+        """
+        if tt_val and len(tt_val) == 1:
+            return tt_val[0]
+
+        active_slicer_tts = []
+        for key, value in st.session_state.items():
+            if str(key).startswith("shared_slicer_tt_") and value not in (None, "__ALL__"):
+                active_slicer_tts.append(value)
+
+        active_slicer_tts = list(dict.fromkeys(active_slicer_tts))
+        return active_slicer_tts[0] if len(active_slicer_tts) == 1 else None
+
+    active_header_tt = _get_active_single_tt_from_filter_or_slicer()
+    show_store_meta = active_header_tt is not None
+    df_meta_source = (
+        df_filtered[df_filtered[col_tt] == active_header_tt].copy()
+        if show_store_meta
+        else pd.DataFrame(columns=df_filtered.columns)
+    )
+
     def get_meta(col):
-        if col == "—":
+        # Метадані магазину показуємо тільки для одного активного ТТ.
+        if not show_store_meta:
+            return ""
+        if col is None or col == "—" or col not in df_meta_source.columns:
             return "—"
-        vals = df_filtered[col].dropna().unique()
-        return str(vals[0]) if len(vals) else "—"
+
+        vals = df_meta_source[col].dropna().unique()
+        if len(vals) == 0:
+            return "—"
+
+        return str(vals[0])
+
+    def get_meta_year(col):
+        # Рік у шапці показуємо як ціле число без .0 / коми.
+        raw = get_meta(col)
+        if raw in (None, "", "—"):
+            return "—"
+        try:
+            return str(int(float(str(raw).replace(",", "."))))
+        except Exception:
+            return str(raw).replace(".0", "")
+
+    def get_meta_format2():
+        # За вимогою: поле "Мегасегмент" у шапці показує значення з колонки Формат2.
+        val = get_meta(col_format2) if "col_format2" in locals() else "—"
+        return val if val not in (None, "", "—") else get_meta(col_mega)
 
     articles_all = sorted(df[col_article].dropna().unique(), key=str)
 
@@ -1358,271 +2867,373 @@ def main():
     else:
         st.info(f"📌 Показується {len(articles_to_show)} статей: {', '.join(articles_to_show)}")
 
-    store_name = ", ".join(str(v) for v in tt_val) if tt_val else "Всі магазини"
-    st.markdown(f"""
-    <div class="simi-header">
-      <span class="simi-logo">СіМі</span>
-      <span class="simi-store">{store_name}</span>
+    # Якщо вибраний один магазин — у шапці показуємо значення зі стовпця "Підрозділ".
+    # Якщо колонка не знайдена або порожня — безпечно повертаємось до ТТ.
+    if show_store_meta:
+        division_name = get_meta(col_division) if "col_division" in locals() else "—"
+        store_name = division_name if division_name not in (None, "", "—") else str(active_header_tt)
+    else:
+        store_name = (", ".join(str(v) for v in tt_val) if tt_val else "Всі магазини")
+
+    meta_html = ""
+    if show_store_meta:
+        meta_html = f"""
       <div class="simi-meta-grid">
         <div><span class="simi-meta-item">Місто </span><span class="simi-meta-val">{get_meta(col_city)}</span></div>
         <div><span class="simi-meta-item">Площа </span><span class="simi-meta-val">{get_meta(col_area)}</span></div>
         <div><span class="simi-meta-item">Формат ТО </span><span class="simi-meta-val">{get_meta(col_format)}</span></div>
-        <div><span class="simi-meta-item">Мегасегмент </span><span class="simi-meta-val">{get_meta(col_mega)}</span></div>
-        <div><span class="simi-meta-item">Рік </span><span class="simi-meta-val">{get_meta(col_rik)}</span></div>
-        <div><span class="simi-meta-item">Місяць </span><span class="simi-meta-val">{get_meta(col_mis)}</span></div>
-      </div>
+        <div><span class="simi-meta-item">Мегасегмент </span><span class="simi-meta-val">{get_meta_format2()}</span></div>
+        <div><span class="simi-meta-item">Рік </span><span class="simi-meta-val">{get_meta_year(col_rik)}</span></div>
+      </div>"""
+
+    st.markdown(f"""
+    <div class="simi-header">
+      <span class="simi-logo">СіМі</span>
+      <span class="simi-store">{store_name}</span>
+      {meta_html}
     </div>""", unsafe_allow_html=True)
 
-    # ── Article blocks ────────────────────────────────────────────────────────
-    for art_idx, article in enumerate(articles_to_show):
-        st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
+    # ── Tabs layout ───────────────────────────────────────────────────────────
+    tab_analysis, tab_combo, tab_pivot, tab_heatmap, tab_statistics, tab_export = st.tabs([
+        "📊 Аналіз по статтях",
+        "🧩 Комбінації факторів",
+        "📋 Зведені таблиці",
+        "🌡️ Heatmap / TOP",
+        "📊 Статистика факторів",
+        "📥 Експорт",
+    ])
 
-        tdf = build_article_monthly(
-            df, df_filtered, col_tt, col_article, col_month, col_value,
-            col_plf, article, tt_val, group_factors
-        )
-        render_article_block(
-            title=article, table_df=tdf,
-            df=df, df_filtered=df_filtered,
-            col_tt=col_tt, col_article=col_article,
-            col_month=col_month, col_value=col_value, col_plf=col_plf,
-            group_factors=group_factors, tt_val=tt_val, article_idx=art_idx,
-        )
+    with tab_analysis:
+            # ── Article blocks ────────────────────────────────────────────────────────
+            for art_idx, article in enumerate(articles_to_show):
+                st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
 
-        if col_ratio and show_ratio_section:
-            rdf = build_ratio_monthly(
-                df_filtered, col_tt, col_article, col_month, col_ratio, col_plf,
-                article, tt_val, df_all=df, group_factors=group_factors
+                shared_active_tt = _render_shared_tt_slicer(
+                    art_idx, df_filtered, col_tt, col_article, article, col_division
+                )
+
+                tdf = build_article_monthly(
+                    df, df_filtered, col_tt, col_article, col_month, col_value,
+                    col_plf, article, tt_val, group_factors
+                )
+                render_article_block(
+                    title=article, table_df=tdf,
+                    df=df, df_filtered=df_filtered,
+                    col_tt=col_tt, col_article=col_article,
+                    col_month=col_month, col_value=col_value, col_plf=col_plf,
+                    group_factors=group_factors, tt_val=tt_val, article_idx=art_idx,
+                    active_tt=shared_active_tt,
+                    col_division=col_division,
+                )
+
+                if col_ratio and show_ratio_section:
+                    rdf = build_ratio_monthly(
+                        df_filtered, col_tt, col_article, col_month, col_ratio, col_plf,
+                        article, tt_val, df_all=df, group_factors=group_factors
+                    )
+                    st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
+                    render_ratio_article_block(
+                        title=article, table_df=rdf,
+                        df=df, df_filtered=df_filtered,
+                        col_tt=col_tt, col_article=col_article,
+                        col_month=col_month, col_ratio=col_ratio, col_plf=col_plf,
+                        tt_val=tt_val, article_idx=art_idx, group_factors=group_factors,
+                        active_tt=shared_active_tt,
+                        col_division=col_division,
+                    )
+
+
+    with tab_combo:
+            # ── Combined factor impact analysis ───────────────────────────────
+            render_combined_factor_impact_tab(
+                df=df,
+                df_filtered=df_filtered,
+                col_tt=col_tt,
+                col_article=col_article,
+                col_month=col_month,
+                col_value=col_value,
+                col_ratio=col_ratio,
+                col_plf=col_plf,
+                articles_to_show=articles_to_show,
+                group_factors=group_factors,
             )
-            st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
-            render_ratio_article_block(
-                title=article, table_df=rdf,
-                df=df, df_filtered=df_filtered,
-                col_tt=col_tt, col_article=col_article,
-                col_month=col_month, col_ratio=col_ratio, col_plf=col_plf,
-                tt_val=tt_val, article_idx=art_idx, group_factors=group_factors,
+
+    with tab_pivot:
+            # ── Pivot table ───────────────────────────────────────────────────────────
+            st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
+            st.subheader("📋 Зведена таблиця")
+            pivot_metric = st.radio("Метрика", ["Fact", "Plan", "Delta (Fact-Plan)"], horizontal=True)
+            col_map_d    = {"Fact": "Fact", "Plan": "Plan", "Delta (Fact-Plan)": "Delta"}
+            metric_col   = col_map_d[pivot_metric]
+
+            rows_pivot = []
+            for article in articles_to_show:
+                tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
+                                            col_month, col_value, col_plf, article, tt_val, group_factors)
+                row = {"Стаття": article}
+                for m in range(1, 13):
+                    row[MONTH_LABELS[m]] = tdf.loc[m, metric_col]
+                row["РАЗОМ"] = sum(tdf.loc[m, metric_col] for m in range(1, 13))
+                rows_pivot.append(row)
+
+            pivot_df = pd.DataFrame(rows_pivot).set_index("Стаття")
+            cmap_p   = "RdYlGn_r" if pivot_metric == "Delta (Fact-Plan)" else "Blues"
+            st.dataframe(
+                pivot_df.style
+                    .background_gradient(cmap=cmap_p, axis=None)
+                    .apply(_style_white_na, axis=None)
+                    .format(lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-", na_rep="-"),
+                use_container_width=True,
             )
 
-    # ── Pivot table ───────────────────────────────────────────────────────────
-    st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
-    st.subheader("📋 Зведена таблиця")
-    pivot_metric = st.radio("Метрика", ["Fact", "Plan", "Delta (Fact-Plan)"], horizontal=True)
-    col_map_d    = {"Fact": "Fact", "Plan": "Plan", "Delta (Fact-Plan)": "Delta"}
-    metric_col   = col_map_d[pivot_metric]
+            # ── % в ТО зведена ───────────────────────────────────────────────────────
+            if col_ratio and show_ratio_section:
+                st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
+                st.markdown('<div class="ratio-section-banner">📊 Зведена таблиця — % в ТО без акцизу та без ПДВ</div>',
+                            unsafe_allow_html=True)
+                ratio_pivot_metric = st.radio("Метрика (% в ТО)", ["Fact", "Plan", "Average", "Delta"],
+                                               horizontal=True, key="ratio_pivot_metric")
+                rows_ratio_pivot = []
+                for article in articles_to_show:
+                    rdf = build_ratio_monthly(
+                        df_filtered, col_tt, col_article, col_month, col_ratio, col_plf,
+                        article, tt_val, df_all=df, group_factors=group_factors
+                    )
+                    row  = {"Стаття": article}
+                    vals = [rdf.loc[m, ratio_pivot_metric] for m in range(1, 13)]
+                    for m in range(1, 13):
+                        row[MONTH_LABELS[m]] = rdf.loc[m, ratio_pivot_metric]
+                    nz = [v for v in vals if v != 0]
+                    row["Серед."] = np.mean(nz) if nz else 0.0
+                    rows_ratio_pivot.append(row)
 
-    rows_pivot = []
-    for article in articles_to_show:
-        tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                    col_month, col_value, col_plf, article, tt_val, group_factors)
-        row = {"Стаття": article}
-        for m in range(1, 13):
-            row[MONTH_LABELS[m]] = tdf.loc[m, metric_col]
-        row["РАЗОМ"] = sum(tdf.loc[m, metric_col] for m in range(1, 13))
-        rows_pivot.append(row)
+                ratio_pivot_df = pd.DataFrame(rows_ratio_pivot).set_index("Стаття")
+                st.dataframe(
+                    ratio_pivot_df.style
+                        .background_gradient(cmap="RdYlGn_r", axis=None)
+                        .apply(_style_white_na, axis=None)
+                        .format(lambda v: f"{v:.2f}%" if pd.notna(v) else "-", na_rep="-"),
+                    use_container_width=True,
+                )
 
-    pivot_df = pd.DataFrame(rows_pivot).set_index("Стаття")
-    cmap_p   = "RdYlGn_r" if pivot_metric == "Delta (Fact-Plan)" else "Blues"
-    st.dataframe(
-        pivot_df.style
-            .background_gradient(cmap=cmap_p, axis=None)
-            .format(lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-", na_rep="-"),
-        use_container_width=True,
-    )
+            # ── TT Pivot ──────────────────────────────────────────────────────────────
+            st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
+            st.subheader("📋 Зведена таблиця в розрізі Підрозділ")
+            tt_pivot_metric = st.radio("Метрика (Підрозділ)", ["Fact", "Plan", "Delta (Fact-Plan)"],
+                                        horizontal=True, key="tt_pivot_metric")
+            tt_metric_col   = col_map_d[tt_pivot_metric]
+            show_pct        = st.checkbox("Показати % відхилення (Fact vs Plan)", value=True, key="show_pct")
+            show_months     = st.checkbox("Розгорнути по місяцях", value=False, key="tt_show_months")
 
-    # ── % в ТО зведена ───────────────────────────────────────────────────────
-    if col_ratio and show_ratio_section:
-        st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
-        st.markdown('<div class="ratio-section-banner">📊 Зведена таблиця — % в ТО без акцизу та без ПДВ</div>',
-                    unsafe_allow_html=True)
-        ratio_pivot_metric = st.radio("Метрика (% в ТО)", ["Fact", "Plan", "Average", "Delta"],
-                                       horizontal=True, key="ratio_pivot_metric")
-        rows_ratio_pivot = []
-        for article in articles_to_show:
-            rdf = build_ratio_monthly(
-                df_filtered, col_tt, col_article, col_month, col_ratio, col_plf,
-                article, tt_val, df_all=df, group_factors=group_factors
+            df_tt_agg = build_tt_pivot(
+                df_filtered, col_tt, col_article, col_month, col_value, col_plf, articles_to_show
             )
-            row  = {"Стаття": article}
-            vals = [rdf.loc[m, ratio_pivot_metric] for m in range(1, 13)]
-            for m in range(1, 13):
-                row[MONTH_LABELS[m]] = rdf.loc[m, ratio_pivot_metric]
-            nz = [v for v in vals if v != 0]
-            row["Серед."] = np.mean(nz) if nz else 0.0
-            rows_ratio_pivot.append(row)
 
-        ratio_pivot_df = pd.DataFrame(rows_ratio_pivot).set_index("Стаття")
-        st.dataframe(
-            ratio_pivot_df.style
-                .background_gradient(cmap="RdYlGn_r", axis=None)
-                .format(lambda v: f"{v:.2f}%" if pd.notna(v) else "-", na_rep="-"),
-            use_container_width=True,
-        )
+            if df_tt_agg.empty:
+                st.info("Немає даних для побудови таблиці по ТТ.")
+            else:
+                if show_months:
+                    display_cols = ["ТТ"]
+                    col_labels   = {"ТТ": "Підрозділ"}
+                    for m in range(1, 13):
+                        ml = MONTH_LABELS[m]
+                        if tt_metric_col in ("Fact", "Delta"):
+                            display_cols.append(f"fact_{ml}")
+                            col_labels[f"fact_{ml}"] = f"{ml} Fact"
+                        if tt_metric_col == "Plan":
+                            display_cols.append(f"plan_{ml}")
+                            col_labels[f"plan_{ml}"] = f"{ml} Plan"
+                        if show_pct and tt_metric_col != "Plan":
+                            display_cols.append(f"pct_{ml}")
+                            col_labels[f"pct_{ml}"] = f"{ml} %"
+                else:
+                    display_cols = ["ТТ"]
+                    col_labels   = {"ТТ": "Підрозділ"}
 
-    # ── TT Pivot ──────────────────────────────────────────────────────────────
-    st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
-    st.subheader("📋 Зведена таблиця в розрізі ТТ")
-    tt_pivot_metric = st.radio("Метрика (ТТ)", ["Fact", "Plan", "Delta (Fact-Plan)"],
-                                horizontal=True, key="tt_pivot_metric")
-    tt_metric_col   = col_map_d[tt_pivot_metric]
-    show_pct        = st.checkbox("Показати % відхилення (Fact vs Plan)", value=True, key="show_pct")
-    show_months     = st.checkbox("Розгорнути по місяцях", value=False, key="tt_show_months")
+                if tt_metric_col == "Fact":
+                    display_cols += ["Fact_РАЗОМ"]
+                    col_labels["Fact_РАЗОМ"] = "Fact РАЗОМ"
+                elif tt_metric_col == "Plan":
+                    display_cols += ["Plan_РАЗОМ"]
+                    col_labels["Plan_РАЗОМ"] = "Plan РАЗОМ"
+                else:
+                    display_cols += ["Fact_РАЗОМ", "Plan_РАЗОМ", "Delta_РАЗОМ"]
+                    col_labels.update({"Fact_РАЗОМ": "Fact РАЗОМ",
+                                       "Plan_РАЗОМ": "Plan РАЗОМ", "Delta_РАЗОМ": "Δ РАЗОМ"})
 
-    df_tt_agg = build_tt_pivot(
-        df_filtered, col_tt, col_article, col_month, col_value, col_plf, articles_to_show
-    )
+                if show_pct:
+                    display_cols.append("Pct_РАЗОМ")
+                    col_labels["Pct_РАЗОМ"] = "% відхил."
 
-    if df_tt_agg.empty:
-        st.info("Немає даних для побудови таблиці по ТТ.")
-    else:
-        if show_months:
-            display_cols = ["ТТ"]
-            col_labels   = {"ТТ": "ТТ"}
-            for m in range(1, 13):
-                ml = MONTH_LABELS[m]
-                if tt_metric_col in ("Fact", "Delta"):
-                    display_cols.append(f"fact_{ml}")
-                    col_labels[f"fact_{ml}"] = f"{ml} Fact"
-                if tt_metric_col == "Plan":
-                    display_cols.append(f"plan_{ml}")
-                    col_labels[f"plan_{ml}"] = f"{ml} Plan"
-                if show_pct and tt_metric_col != "Plan":
-                    display_cols.append(f"pct_{ml}")
-                    col_labels[f"pct_{ml}"] = f"{ml} %"
-        else:
-            display_cols = ["ТТ"]
-            col_labels   = {"ТТ": "ТТ"}
+                df_display = df_tt_agg[display_cols].rename(columns=col_labels).set_index("Підрозділ")
 
-        if tt_metric_col == "Fact":
-            display_cols += ["Fact_РАЗОМ"]
-            col_labels["Fact_РАЗОМ"] = "Fact РАЗОМ"
-        elif tt_metric_col == "Plan":
-            display_cols += ["Plan_РАЗОМ"]
-            col_labels["Plan_РАЗОМ"] = "Plan РАЗОМ"
-        else:
-            display_cols += ["Fact_РАЗОМ", "Plan_РАЗОМ", "Delta_РАЗОМ"]
-            col_labels.update({"Fact_РАЗОМ": "Fact РАЗОМ",
-                               "Plan_РАЗОМ": "Plan РАЗОМ", "Delta_РАЗОМ": "Δ РАЗОМ"})
+                tt_display_map = _build_tt_display_map(df_filtered, col_tt, col_division)
+                if tt_display_map:
+                    df_display.index = [_tt_display_label(v, tt_display_map) for v in df_display.index]
+                    df_display.index.name = "Підрозділ"
 
-        if show_pct:
-            display_cols.append("Pct_РАЗОМ")
-            col_labels["Pct_РАЗОМ"] = "% відхил."
+                sort_col_label = ("% відхил." if show_pct else
+                                  "Δ РАЗОМ"    if tt_metric_col == "Delta (Fact-Plan)" else
+                                  "Fact РАЗОМ" if tt_metric_col == "Fact" else "Plan РАЗОМ")
+                if sort_col_label in df_display.columns:
+                    df_display = df_display.sort_values(sort_col_label, ascending=True)
 
-        df_display = df_tt_agg[display_cols].rename(columns=col_labels).set_index("ТТ")
+                total_row = df_display.sum(numeric_only=True)
+                if "% відхил." in df_display.columns:
+                    plan_sum = df_tt_agg["Plan_РАЗОМ"].sum()
+                    fact_sum = df_tt_agg["Fact_РАЗОМ"].sum()
+                    total_row["% відхил."] = (fact_sum / plan_sum - 1) * 100 if plan_sum != 0 else None
+                total_row.name = "🟰 РАЗОМ"
+                df_display     = pd.concat([df_display, total_row.to_frame().T])
 
-        sort_col_label = ("% відхил." if show_pct else
-                          "Δ РАЗОМ"    if tt_metric_col == "Delta (Fact-Plan)" else
-                          "Fact РАЗОМ" if tt_metric_col == "Fact" else "Plan РАЗОМ")
-        if sort_col_label in df_display.columns:
-            df_display = df_display.sort_values(sort_col_label, ascending=True)
+                pct_cols = [c for c in df_display.columns if "%" in c]
+                num_cols = [c for c in df_display.columns if "%" not in c]
+                fmt_dict = {c: (lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-") for c in num_cols}
+                fmt_dict.update({c: (lambda v: f"{'+' if v > 0 else ''}{v:.1f}%" if pd.notna(v) else "-")
+                                 for c in pct_cols})
 
-        total_row = df_display.sum(numeric_only=True)
-        if "% відхил." in df_display.columns:
-            plan_sum = df_tt_agg["Plan_РАЗОМ"].sum()
-            fact_sum = df_tt_agg["Fact_РАЗОМ"].sum()
-            total_row["% відхил."] = (fact_sum / plan_sum - 1) * 100 if plan_sum != 0 else None
-        total_row.name = "🟰 РАЗОМ"
-        df_display     = pd.concat([df_display, total_row.to_frame().T])
+                styled = df_display.style.apply(_style_white_na, axis=None).format(fmt_dict, na_rep="")
+                if pct_cols:
+                    styled = styled.background_gradient(cmap="RdYlGn_r",
+                                subset=pd.IndexSlice[df_display.index[:-1], pct_cols], axis=None)
+                delta_cols = [c for c in num_cols if "Δ" in c]
+                other_cols = [c for c in num_cols if "Δ" not in c]
+                if delta_cols:
+                    styled = styled.background_gradient(cmap="RdYlGn_r",
+                                subset=pd.IndexSlice[df_display.index[:-1], delta_cols], axis=None)
+                if other_cols:
+                    styled = styled.background_gradient(cmap="Blues",
+                                subset=pd.IndexSlice[df_display.index[:-1], other_cols], axis=None)
+                styled = styled.apply(
+                    lambda row: ["font-weight:bold;border-top:2px solid #5b2d8e;" for _ in row]
+                    if row.name == "🟰 РАЗОМ" else ["" for _ in row], axis=1
+                )
+                st.dataframe(styled, use_container_width=True, height=500)
+                st.download_button(
+                    "⬇️ Завантажити CSV (ТТ-зведена)",
+                    data=df_display.to_csv(encoding="utf-8-sig").encode("utf-8-sig"),
+                    file_name="tt_pivot.csv", mime="text/csv", key="tt_pivot_csv",
+                )
 
-        pct_cols = [c for c in df_display.columns if "%" in c]
-        num_cols = [c for c in df_display.columns if "%" not in c]
-        fmt_dict = {c: (lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-") for c in num_cols}
-        fmt_dict.update({c: (lambda v: f"{'+' if v > 0 else ''}{v:.1f}%" if pd.notna(v) else "-")
-                         for c in pct_cols})
+    with tab_heatmap:
+            # ── Heatmap ───────────────────────────────────────────────────────────────
+            st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
+            st.subheader("🌡️ Карта аномалій по магазинах")
 
-        styled = df_display.style.format(fmt_dict, na_rep="-")
-        if pct_cols:
-            styled = styled.background_gradient(cmap="RdYlGn_r",
-                        subset=pd.IndexSlice[df_display.index[:-1], pct_cols], axis=None)
-        delta_cols = [c for c in num_cols if "Δ" in c]
-        other_cols = [c for c in num_cols if "Δ" not in c]
-        if delta_cols:
-            styled = styled.background_gradient(cmap="RdYlGn_r",
-                        subset=pd.IndexSlice[df_display.index[:-1], delta_cols], axis=None)
-        if other_cols:
-            styled = styled.background_gradient(cmap="Blues",
-                        subset=pd.IndexSlice[df_display.index[:-1], other_cols], axis=None)
-        styled = styled.apply(
-            lambda row: ["font-weight:bold;border-top:2px solid #5b2d8e;" for _ in row]
-            if row.name == "🟰 РАЗОМ" else ["" for _ in row], axis=1
-        )
-        st.dataframe(styled, use_container_width=True, height=500)
-        st.download_button(
-            "⬇️ Завантажити CSV (ТТ-зведена)",
-            data=df_display.to_csv(encoding="utf-8-sig").encode("utf-8-sig"),
-            file_name="tt_pivot.csv", mime="text/csv", key="tt_pivot_csv",
-        )
+            if group_factors:
+                heat, tt_table, val_col = build_heat_data(
+                    df, df_filtered, col_tt, col_article, col_month, col_value,
+                    col_plf, group_factors, articles_to_show, mode
+                )
+                heat_display = _replace_tt_index_with_division(heat, df_filtered, col_tt, col_division)
 
-    # ── Heatmap ───────────────────────────────────────────────────────────────
-    st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
-    st.subheader("🌡️ Карта аномалій по магазинах")
+                st.dataframe(
+                    heat_display.style
+                        .background_gradient(cmap="RdYlGn_r", axis=None)
+                        .apply(_style_white_na, axis=None)
+                        .format(lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "", na_rep=""),
+                    use_container_width=True,
+                )
 
-    if group_factors:
-        heat, tt_table, val_col = build_heat_data(
-            df, df_filtered, col_tt, col_article, col_month, col_value,
-            col_plf, group_factors, articles_to_show, mode
-        )
-        st.dataframe(
-            heat.style
-                .background_gradient(cmap="RdYlGn_r", axis=None)
-                .highlight_null(color="white")
-                .format(lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "", na_rep=""),
-            use_container_width=True,
-        )
+                st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
+                st.subheader("🏆 TOP / ANTITOP магазинів")
+                sum_val = tt_table.groupby(col_tt)[val_col].sum().reset_index()
+                n_tt    = st.slider("Кількість магазинів", 1, 100, 10)
+                top     = sum_val.sort_values(val_col, ascending=True).head(n_tt)
+                antitop = sum_val.sort_values(val_col, ascending=False).head(n_tt)
+                top_display = _add_division_display_column(top, df_filtered, col_tt, col_division)
+                antitop_display = _add_division_display_column(antitop, df_filtered, col_tt, col_division)
+                fmt_abs = lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-"
+                ca, cb  = st.columns(2)
+                with ca:
+                    st.write("✅ Top (економія)")
+                    st.dataframe(
+                        top_display[["Підрозділ", val_col]].set_index("Підрозділ")
+                            .style.background_gradient(cmap="RdYlGn", subset=[val_col])
+                            .apply(_style_white_na, axis=None)
+                            .format({val_col: fmt_abs}),
+                        use_container_width=True
+                    )
+                with cb:
+                    st.write("❌ Antitop (переліміт)")
+                    st.dataframe(
+                        antitop_display[["Підрозділ", val_col]].set_index("Підрозділ")
+                            .style.background_gradient(cmap="RdYlGn_r", subset=[val_col])
+                            .apply(_style_white_na, axis=None)
+                            .format({val_col: fmt_abs}),
+                        use_container_width=True
+                    )
+            else:
+                st.info("Оберіть фактори групування в боковому меню для побудови Heatmap.")
 
-        st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
-        st.subheader("🏆 TOP / ANTITOP магазинів")
-        sum_val = tt_table.groupby(col_tt)[val_col].sum().reset_index()
-        n_tt    = st.slider("Кількість магазинів", 1, 100, 10)
-        top     = sum_val.sort_values(val_col, ascending=True).head(n_tt)
-        antitop = sum_val.sort_values(val_col, ascending=False).head(n_tt)
-        fmt_abs = lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-"
-        ca, cb  = st.columns(2)
-        with ca:
-            st.write("✅ Top (економія)")
-            st.dataframe(top.style.background_gradient(cmap="RdYlGn", subset=[val_col])
-                            .format({val_col: fmt_abs}))
-        with cb:
-            st.write("❌ Antitop (переліміт)")
-            st.dataframe(antitop.style.background_gradient(cmap="RdYlGn_r", subset=[val_col])
-                                 .format({val_col: fmt_abs}))
-    else:
-        st.info("Оберіть фактори групування в боковому меню для побудови Heatmap.")
+            # ── % в ТО Heatmap ────────────────────────────────────────────────────────
+            if col_ratio and show_ratio_heatmap:
+                st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
+                render_ratio_heatmap_section(
+                    df, df_filtered, col_tt, col_article, col_month,
+                    col_ratio, col_plf, articles_to_show, ratio_mode,
+                    group_factors=group_factors,
+                    col_division=col_division,
+                )
 
-    # ── % в ТО Heatmap ────────────────────────────────────────────────────────
-    if col_ratio and show_ratio_heatmap:
-        st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
-        render_ratio_heatmap_section(
-            df, df_filtered, col_tt, col_article, col_month,
-            col_ratio, col_plf, articles_to_show, ratio_mode,
-            group_factors=group_factors,
-        )
+    with tab_statistics:
+            # ── Statistical factor analysis ──────────────────────────────────────────
+            render_statistical_analysis_tab(
+                df=df,
+                col_article=col_article,
+                col_value=col_value,
+                col_plf=col_plf,
+                articles_to_show=articles_to_show,
+                group_factors=group_factors,
+            )
 
-    # ── Export ────────────────────────────────────────────────────────────────
-    st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
-    st.subheader("📥 Експорт в Excel")
+    with tab_export:
+            # ── Export ────────────────────────────────────────────────────────────────
+            st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
+            st.subheader("📥 Експорт в Excel")
 
-    export_sections = ["✅ Зведена таблиця (статті)", "✅ Листи по кожній статті (з графіком)"]
-    if df_tt_agg is not None and not df_tt_agg.empty:
-        export_sections.append("✅ ТТ-Зведена таблиця")
-    if col_ratio:
-        export_sections.append("✅ % в ТО — зведена таблиця")
-    if group_factors:
-        export_sections += ["✅ Heatmap аномалій", "✅ TOP / ANTITOP магазинів"]
+            export_sections = [
+                "✅ Зведена таблиця (статті)",
+                "✅ Основні таблиці всіх блоків",
+                "✅ Листи по кожній статті (з графіком)",
+            ]
+            if col_ratio:
+                export_sections += [
+                    "✅ Основні блоки % в ТО",
+                    "✅ % в ТО — зведена таблиця",
+                ]
+            if df_tt_agg is not None and not df_tt_agg.empty:
+                export_sections.append("✅ Підрозділ-Зведена таблиця")
+            if group_factors:
+                export_sections += [
+                    "✅ Heatmap аномалій",
+                    "✅ TOP / ANTITOP",
+                    "✅ Аналіз комбінації факторів",
+                    "✅ Статистичний аналіз факторів",
+                ]
+            if group_factors and col_ratio:
+                export_sections += [
+                    "✅ Heatmap % в ТО",
+                    "✅ TOP / ANTITOP % в ТО",
+                    "✅ Аналіз комбінації факторів % в ТО",
+                ]
+            export_sections.append("✅ Дані після фільтрів")
 
-    st.markdown("**Файл міститиме аркуші:**")
-    for s in export_sections:
-        st.markdown(f"- {s}")
+            st.markdown("**Файл міститиме аркуші:**")
+            for s in export_sections:
+                st.markdown(f"- {s}")
 
-    st.download_button(
-        label="⬇️ Скачати дашборд як Excel",
-        data=export_excel(
-            df, df_filtered, col_tt, col_article, col_month, col_value,
-            col_plf, articles_to_show, tt_val, group_factors, metric_col,
-            mode, pivot_df, df_tt_agg=df_tt_agg, col_ratio=col_ratio,
-        ),
-        file_name="simi_dashboard.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+            st.download_button(
+                label="⬇️ Скачати дашборд як Excel",
+                data=export_excel(
+                    df, df_filtered, col_tt, col_article, col_month, col_value,
+                    col_plf, articles_to_show, tt_val, group_factors, metric_col,
+                    mode, pivot_df, df_tt_agg=df_tt_agg, col_ratio=col_ratio,
+                    col_division=col_division, ratio_mode=ratio_mode,
+                ),
+                file_name="simi_dashboard.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 
 if __name__ == "__main__":
