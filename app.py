@@ -35,18 +35,30 @@ ORANGE    = "#e67e22"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def get_month_num(series):
     if pd.api.types.is_numeric_dtype(series):
-        return series.astype(int)
-    return series.astype(str).str.strip().map(MONTH_MAP).fillna(0).astype(int)
+        return pd.to_numeric(series, errors="coerce").fillna(0).astype("int16")
+    month_map_lower = {str(k).lower(): v for k, v in MONTH_MAP.items()}
+    return series.astype(str).str.strip().str.lower().map(month_map_lower).fillna(0).astype("int16")
 
 
-@st.cache_data
 def load_excel(file_bytes, file_name, sheet_name):
+    """Швидке читання Excel без кешування + зменшення памʼяті."""
     import os
     buf = io.BytesIO(file_bytes)
     ext = os.path.splitext(file_name)[1].lower()
     engine = "pyxlsb" if ext == ".xlsb" else None
-    df = pd.read_excel(buf, sheet_name=sheet_name, **({} if engine is None else {"engine": engine}))
+
+    if engine:
+        df = pd.read_excel(buf, sheet_name=sheet_name, engine=engine)
+    else:
+        df = pd.read_excel(buf, sheet_name=sheet_name)
+
     df.columns = df.columns.str.strip()
+
+    for c in df.select_dtypes(include=["float64"]).columns:
+        df[c] = pd.to_numeric(df[c], downcast="float")
+    for c in df.select_dtypes(include=["int64"]).columns:
+        df[c] = pd.to_numeric(df[c], downcast="integer")
+
     return df
 
 
@@ -175,7 +187,9 @@ def _select_col(label, cols, state_key, allow_empty=False, help=None):
 
 
 def _prep(df, col_month):
-    """Add _m column in-place."""
+    """Add _m column only when needed. Avoids repeated heavy copies."""
+    if "_m" in df.columns:
+        return df
     out = df.copy()
     out["_m"] = get_month_num(out[col_month])
     return out
@@ -192,23 +206,29 @@ def _plan_rows(df, col_plf):
 
 
 def _make_combo_col(df, factors):
-    """Safely build a combined-factor text column for pandas/Python versions used on Streamlit Cloud."""
+    """Швидке формування тексту комбінації факторів без apply(axis=1)."""
     valid_factors = [f for f in factors if f in df.columns]
 
     if not valid_factors:
         return pd.Series("", index=df.index), []
 
-    def make_combo(row):
-        vals = []
-        for v in row:
-            if pd.notna(v) and str(v).strip() != "":
-                vals.append(str(v).strip())
-        return " | ".join(vals)
+    # temp.agg(" | ".join, axis=1) на великих файлах повільний.
+    # str.cat у циклі по кількості факторів працює значно швидше.
+    combo = df[valid_factors[0]].astype("string").fillna("").str.strip()
 
-    return df[valid_factors].apply(make_combo, axis=1), valid_factors
+    for factor in valid_factors[1:]:
+        part = df[factor].astype("string").fillna("").str.strip()
+        combo = combo.str.cat(part, sep=" | ")
 
+    combo = (
+        combo
+        .str.replace(r"(^\s*\|\s*)|(\s*\|\s*$)", "", regex=True)
+        .str.replace(r"(\s*\|\s*){2,}", " | ", regex=True)
+        .str.strip(" |")
+    )
 
-# ── Core calculation: build global average respecting group_factors ───────────
+    return combo, valid_factors
+
 def _build_global_avg(df_all_fact, col_value, col_article, col_tt,
                       group_factors, agg_fn="mean"):
     """
@@ -222,7 +242,7 @@ def _build_global_avg(df_all_fact, col_value, col_article, col_tt,
 
     return (
         df_all_fact
-        .groupby(grp, as_index=False)[col_value]
+        .groupby(grp, as_index=False, observed=True)[col_value]
         .agg(Average_Calc=agg_fn)
     )
 
@@ -256,10 +276,10 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
         selected_tts = art_filt[col_tt].dropna().unique().tolist()
 
     plan = (_plan_rows(art_filt, col_plf)
-            .groupby("_m")[col_value].sum()
+            .groupby("_m", observed=True)[col_value].sum()
             .reindex(range(1, 13), fill_value=0).rename("Plan"))
     fact = (_fact_rows(art_filt, col_plf)
-            .groupby("_m")[col_value].sum()
+            .groupby("_m", observed=True)[col_value].sum()
             .reindex(range(1, 13), fill_value=0).rename("Fact"))
 
     # --- Average (норматив): ЗАВЖДИ з ПОВНОГО df, щоб фільтри не спотворювали норму ---
@@ -271,7 +291,7 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
     tt_grp = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
     tt_table = (
         _fact_rows(art_filt, col_plf)
-        .groupby(tt_grp, as_index=False)[col_value]
+        .groupby(tt_grp, as_index=False, observed=True)[col_value]
         .sum()
         .rename(columns={col_value: "Fact"})
     )
@@ -282,7 +302,7 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
 
     dynamic_average = (
         tt_table[tt_table[col_tt].isin(selected_tts)]
-        .groupby("_m")["Average_Calc"].sum()
+        .groupby("_m", observed=True)["Average_Calc"].sum()
         .reindex(range(1, 13), fill_value=0)
         .rename("Average")
     )
@@ -304,24 +324,16 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
                          df_all=None, group_factors=None):
     """
     Relative monthly table: Plan / Fact / Average / Delta for "% в ТО".
-
-    ВИПРАВЛЕННЯ:
-    1) Якщо вибраний рівно 1 ТТ і підключені фактори групування,
-       Average % береться як середнє зі стовпця Excel col_ratio
-       по групі факторів цього ТТ, а не через Average_abs / Average_TO.
-    2) Average % більше НЕ обнуляється, коли Fact == 0.
-       Інакше норматив пропадав у місяцях без факту по вибраному ТТ.
-    3) План/Факт % і далі рахуються через Значение / ТО без ПДВ та без акцизу.
+    Оптимізовано: мінімум копій, один прохід для Plan/Fact, без циклу по factor-combos.
     """
     if group_factors is None:
         group_factors = []
 
     col_value_abs = "Значение"
     to_article_name = "ТО без ПДВ та без акцизу"
-
     src_all = df_all if df_all is not None else df_filtered
 
-    art_filt = _prep(df_filtered[df_filtered[col_article] == selected_art].copy(), col_month)
+    art_filt = _prep(df_filtered[df_filtered[col_article].eq(selected_art)], col_month)
 
     if art_filt.empty:
         return pd.DataFrame(0.0, index=range(1, 13), columns=["Plan", "Fact", "Average", "Delta"])
@@ -331,49 +343,36 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
 
     selected_tts_clean = [t for t in selected_tts if pd.notna(t)]
     one_tt_selected = len(selected_tts_clean) == 1
-    months_used = art_filt["_m"].dropna().unique().tolist()
+    months_used = art_filt["_m"].dropna().unique()
 
-    # ── Plan / Fact %: рахуємо від ТО вибраних ТТ ─────────────────────────────
-    # Знаменник ТО беремо з повного src_all, щоб додаткові фільтри
-    # не прибрали статтю "ТО без ПДВ та без акцизу".
-    to_base = src_all[
-        (src_all[col_article] == to_article_name)
-        & (src_all[col_tt].isin(selected_tts_clean if selected_tts_clean else selected_tts))
-    ].copy()
+    # ── Plan / Fact %: Значення статті / ТО вибраних ТТ ───────────────────────
+    to_mask = (
+        src_all[col_article].eq(to_article_name)
+        & src_all[col_tt].isin(selected_tts_clean if selected_tts_clean else selected_tts)
+    )
+    to_base = _prep(src_all[to_mask], col_month)
+    if len(months_used):
+        to_base = to_base[to_base["_m"].isin(months_used)]
 
-    to_base = _prep(to_base, col_month)
-    to_base = to_base[to_base["_m"].isin(months_used)]
+    # numeric без зайвих присвоєнь у великий df
+    art_val = pd.to_numeric(art_filt[col_value_abs], errors="coerce")
+    to_val = pd.to_numeric(to_base[col_value_abs], errors="coerce")
 
-    art_filt[col_value_abs] = pd.to_numeric(art_filt[col_value_abs], errors="coerce")
-    to_base[col_value_abs] = pd.to_numeric(to_base[col_value_abs], errors="coerce")
+    art_tmp = art_filt[[col_plf, "_m"]].copy()
+    art_tmp["_val"] = art_val.to_numpy()
+    to_tmp = to_base[[col_plf, "_m"]].copy()
+    to_tmp["_val"] = to_val.to_numpy()
 
-    fact_art = _fact_rows(art_filt, col_plf)
-    plan_art = _plan_rows(art_filt, col_plf)
-    fact_to = _fact_rows(to_base, col_plf)
-    plan_to = _plan_rows(to_base, col_plf)
+    def calc_ratio_series_fast(data_art, data_to, plf_code):
+        a = data_art[data_art[col_plf].eq(plf_code)].groupby("_m", observed=True)["_val"].sum()
+        t = data_to[data_to[col_plf].eq(plf_code)].groupby("_m", observed=True)["_val"].sum()
+        ratio = (a / t.replace(0, np.nan) * 100).replace([np.inf, -np.inf], np.nan)
+        return ratio.fillna(0).reindex(range(1, 13), fill_value=0)
 
-    def calc_ratio_series(data_art, data_to):
-        s_art = data_art.groupby("_m")[col_value_abs].sum()
-        s_to = data_to.groupby("_m")[col_value_abs].sum()
-
-        combined = pd.concat([s_art, s_to], axis=1, keys=["art", "to"])
-        ratio = (combined["art"] / combined["to"].replace(0, np.nan)) * 100
-
-        return (
-            ratio
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0)
-            .reindex(range(1, 13), fill_value=0)
-        )
-
-    fact = calc_ratio_series(fact_art, fact_to).rename("Fact")
-    plan = calc_ratio_series(plan_art, plan_to).rename("Plan")
+    fact = calc_ratio_series_fast(art_tmp, to_tmp, "F").rename("Fact")
+    plan = calc_ratio_series_fast(art_tmp, to_tmp, "PL").rename("Plan")
 
     # ── Average % ─────────────────────────────────────────────────────────────
-    # Ключовий кейс: 1 ТТ + фактори групування.
-    # Беремо факторні значення вибраного ТТ і шукаємо всю групу в повному df.
-    # Далі Average % = середнє зі стовпця "% в ТО без акцизу та без ПДВ"
-    # по цій групі, статті, Fact-рядках і місяцях.
     if one_tt_selected and group_factors and col_ratio and col_ratio in src_all.columns:
         selected_tt = selected_tts_clean[0]
         valid_factors = [f for f in group_factors if f in src_all.columns]
@@ -381,40 +380,37 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
         average = pd.Series(0.0, index=range(1, 13), name="Average")
 
         if valid_factors:
-            tt_factor_rows = src_all[src_all[col_tt] == selected_tt].copy()
-            if selected_art is not None:
-                tt_factor_rows = tt_factor_rows[tt_factor_rows[col_article] == selected_art]
+            tt_factor_rows = src_all[
+                src_all[col_tt].eq(selected_tt)
+                & src_all[col_article].eq(selected_art)
+            ]
             tt_factor_rows = _fact_rows(tt_factor_rows, col_plf)
 
             if not tt_factor_rows.empty:
-                # Якщо в одному ТТ по статті є кілька наборів факторів,
-                # беремо всі унікальні комбінації та рахуємо норматив по них.
                 selected_factor_combos = (
                     tt_factor_rows[valid_factors]
                     .drop_duplicates()
                     .dropna(how="all")
                 )
 
-                ratio_parts = []
-                src_ratio = _prep(src_all[src_all[col_article] == selected_art].copy(), col_month)
-                src_ratio = _fact_rows(src_ratio, col_plf).copy()
-                src_ratio[col_ratio] = pd.to_numeric(src_ratio[col_ratio], errors="coerce")
+                src_ratio = _prep(src_all[src_all[col_article].eq(selected_art)], col_month)
+                src_ratio = _fact_rows(src_ratio, col_plf)
 
-                for _, combo in selected_factor_combos.iterrows():
-                    mask = pd.Series(True, index=src_ratio.index)
-                    for factor in valid_factors:
-                        val = combo[factor]
-                        if pd.isna(val):
-                            mask &= src_ratio[factor].isna()
-                        else:
-                            mask &= src_ratio[factor].astype(str).eq(str(val))
-                    ratio_parts.append(src_ratio[mask])
+                # Замість циклу mask по кожній комбінації — один merge по факторах.
+                matched = src_ratio.merge(
+                    selected_factor_combos,
+                    on=valid_factors,
+                    how="inner"
+                )
 
-                if ratio_parts:
-                    group_ratio_df = pd.concat(ratio_parts, ignore_index=True).drop_duplicates()
+                if not matched.empty:
+                    ratio_num = pd.to_numeric(matched[col_ratio], errors="coerce")
+                    matched = matched[["_m"]].copy()
+                    matched["_ratio"] = ratio_num.to_numpy()
+
                     average = (
-                        group_ratio_df
-                        .groupby("_m")[col_ratio]
+                        matched
+                        .groupby("_m", observed=True)["_ratio"]
                         .mean()
                         .replace([np.inf, -np.inf], np.nan)
                         .fillna(0)
@@ -422,8 +418,7 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
                         .rename("Average")
                     )
     else:
-        # Для всіх інших випадків залишаємо попередню динамічну логіку:
-        # Average % = Average_abs / Fact_TO вибраних ТТ * 100.
+        # Інші випадки: Average % = Average_abs / Fact_TO вибраних ТТ * 100.
         avg_abs_df = build_article_monthly(
             src_all,
             df_filtered,
@@ -438,18 +433,11 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
         )
 
         avg_abs_by_month = avg_abs_df["Average"].reindex(range(1, 13), fill_value=0)
-        to_by_month = (
-            fact_to
-            .groupby("_m")[col_value_abs]
-            .sum()
-            .reindex(range(1, 13), fill_value=0)
-        )
+        fact_to_month = to_tmp[to_tmp[col_plf].eq("F")].groupby("_m", observed=True)["_val"].sum().reindex(range(1, 13), fill_value=0)
 
         average = (
-            (avg_abs_by_month / to_by_month.replace(0, np.nan)) * 100
-        ).replace([np.inf, -np.inf], np.nan).fillna(0)
-
-        average = average.reindex(range(1, 13), fill_value=0).rename("Average")
+            (avg_abs_by_month / fact_to_month.replace(0, np.nan)) * 100
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).rename("Average")
 
     merged = (
         pd.DataFrame(index=range(1, 13))
@@ -460,14 +448,11 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
     )
 
     merged.index.name = "month"
-
-    # ВАЖЛИВО: НЕ обнуляємо Average при Fact == 0.
-    # Саме це приховувало Average % при виборі одного ТТ + факторів.
     merged["Delta"] = merged["Fact"] - merged["Average"]
 
     return merged
 
-# ── Factor Impact Analysis ────────────────────────────────────────────────────
+
 def analyze_factor_impact(df, df_filtered, col_tt, col_article, col_month,
                           col_value, col_plf, selected_art, group_factors):
     if not group_factors:
@@ -480,7 +465,7 @@ def analyze_factor_impact(df, df_filtered, col_tt, col_article, col_month,
     impact_data = []
     for factor in group_factors:
         factor_impact = (
-            all_fact.groupby([factor, "_m"], as_index=False)[col_value]
+            all_fact.groupby([factor, "_m"], as_index=False, observed=True)[col_value]
             .agg(Average="mean", Count="count", Total="sum", Std="std")
         )
         for _, row in factor_impact.iterrows():
@@ -534,7 +519,7 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
 
     combo_impact = (
         all_fact
-        .groupby([combo_col, "_m"], as_index=False)[col_value]
+        .groupby([combo_col, "_m"], as_index=False, observed=True)[col_value]
         .agg(
             Середнє="mean",
             Кількість="count",
@@ -561,7 +546,7 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
         columns=[m for m in MONTHS_LIST if m in pivot_impact.columns]
     )
 
-    summary_by_combo = combo_impact.groupby(combo_col, as_index=True).agg(
+    summary_by_combo = combo_impact.groupby(combo_col, as_index=True, observed=True).agg(
         **{
             "Середнє (загальне)": ("Середнє", "mean"),
             "Всього записів": ("Кількість", "sum"),
@@ -594,7 +579,7 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
 
     top_combos = (
         combo_impact
-        .groupby(combo_col)["Сума"]
+        .groupby(combo_col, observed=True)["Сума"]
         .sum()
         .abs()
         .sort_values(ascending=False)
@@ -610,7 +595,7 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
     # Орієнтир: середнє по всіх показаних комбінаціях за кожен місяць
     avg_line = (
         chart_data
-        .groupby("_m", as_index=False)["Середнє"]
+        .groupby("_m", as_index=False, observed=True)["Середнє"]
         .mean()
         .sort_values("_m")
     )
@@ -693,7 +678,7 @@ def analyze_ratio_factor_impact(df, df_filtered, col_tt, col_article, col_month,
     impact_data = []
     for factor in group_factors:
         factor_impact = (
-            all_fact.groupby([factor, "_m"], as_index=False)[col_ratio]
+            all_fact.groupby([factor, "_m"], as_index=False, observed=True)[col_ratio]
             .agg(Average="mean", Count="count", Total="sum", Std="std")
         )
         for _, row in factor_impact.iterrows():
@@ -747,7 +732,7 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
 
     combo_impact = (
         all_fact
-        .groupby([combo_col, "_m"], as_index=False)[col_ratio]
+        .groupby([combo_col, "_m"], as_index=False, observed=True)[col_ratio]
         .agg(
             Середнє="mean",
             Кількість="count",
@@ -775,7 +760,7 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
     )
 
 
-    summary_by_combo = combo_impact.groupby(combo_col, as_index=True).agg(
+    summary_by_combo = combo_impact.groupby(combo_col, as_index=True, observed=True).agg(
         **{
             "Середнє (загальне)": ("Середнє", "mean"),
             "Всього записів": ("Кількість", "sum"),
@@ -808,7 +793,7 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
 
     top_combos = (
         combo_impact
-        .groupby(combo_col)["Сума"]
+        .groupby(combo_col, observed=True)["Сума"]
         .sum()
         .abs()
         .sort_values(ascending=False)
@@ -824,7 +809,7 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
     # Орієнтир: середнє по всіх показаних комбінаціях за кожен місяць
     avg_line = (
         chart_data
-        .groupby("_m", as_index=False)["Середнє"]
+        .groupby("_m", as_index=False, observed=True)["Середнє"]
         .mean()
         .sort_values("_m")
     )
@@ -1045,7 +1030,7 @@ def _factor_stat_models(data, factor, value_col):
     overall_mean = work[value_col].mean()
     overall_median = work[value_col].median()
 
-    groups = work.groupby(factor)[value_col]
+    groups = work.groupby(factor, observed=True)[value_col]
     means = groups.mean()
     medians = groups.median()
     counts = groups.count()
@@ -1491,7 +1476,7 @@ def build_heat_data(df, df_filtered, col_tt, col_article, col_month, col_value,
     # FIX: global_avg_std — з ПОВНОГО df
     global_avg_std = (
         _fact_rows(df_num, col_plf)
-        .groupby(group_factors + [col_article], as_index=False)[col_value]
+        .groupby(group_factors + [col_article], as_index=False, observed=True)[col_value]
         .agg(Average_Calc="mean", Std="std")
     )
 
@@ -1504,7 +1489,7 @@ def build_heat_data(df, df_filtered, col_tt, col_article, col_month, col_value,
 
     tt_grp   = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
     tt_table = (
-        data_heat.groupby(tt_grp, as_index=False)[col_value]
+        data_heat.groupby(tt_grp, as_index=False, observed=True)[col_value]
         .sum().rename(columns={col_value: "Fact"})
     )
     merge_cols = list(dict.fromkeys(group_factors + [col_article]))
@@ -1548,19 +1533,19 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
 
     if group_factors:
         grp_cols   = list(dict.fromkeys(group_factors + [col_article, "_m"]))
-        global_avg = (avg_src.groupby(grp_cols)[col_ratio]
+        global_avg = (avg_src.groupby(grp_cols, observed=True)[col_ratio]
                       .mean().reset_index()
                       .rename(columns={col_ratio: "Average_Calc"}))
         merge_on   = grp_cols
     else:
-        global_avg = (avg_src.groupby([col_article, "_m"])[col_ratio]
+        global_avg = (avg_src.groupby([col_article, "_m"], observed=True)[col_ratio]
                       .mean().reset_index()
                       .rename(columns={col_ratio: "Average_Calc"}))
         merge_on   = [col_article, "_m"]
 
     tt_grp   = list(dict.fromkeys([col_tt] + group_factors + [col_article, "_m"]))
     tt_table = (
-        data_heat.groupby(tt_grp, as_index=False)[col_ratio]
+        data_heat.groupby(tt_grp, as_index=False, observed=True)[col_ratio]
         .mean().rename(columns={col_ratio: "Fact"})
     )
     tt_table   = pd.merge(tt_table, global_avg, on=merge_on, how="left")
@@ -1593,55 +1578,84 @@ def _fill_heat_cols(heat):
 
 def build_tt_pivot(df_filtered, col_tt, col_article, col_month, col_value,
                    col_plf, articles_to_show):
-    df_num = _prep(df_filtered.copy(), col_month)
-    df_num[col_value] = pd.to_numeric(df_num[col_value], errors="coerce")
-
-    all_tts = sorted(df_filtered[col_tt].dropna().unique(), key=str)
-    rows = []
-    for tt in all_tts:
-        sub = df_num[df_num[col_tt] == tt]
-        for article in articles_to_show:
-            sub_a  = sub[sub[col_article] == article]
-            plan_m = _plan_rows(sub_a, col_plf).groupby("_m")[col_value].sum()
-            fact_m = _fact_rows(sub_a, col_plf).groupby("_m")[col_value].sum()
-            row    = {"ТТ": tt, "Стаття": article}
-            for m in range(1, 13):
-                ml = MONTH_LABELS[m]
-                row[f"plan_{ml}"] = plan_m.get(m, 0)
-                row[f"fact_{ml}"] = fact_m.get(m, 0)
-            row["Plan_РАЗОМ"]  = sum(plan_m.get(m, 0) for m in range(1, 13))
-            row["Fact_РАЗОМ"]  = sum(fact_m.get(m, 0) for m in range(1, 13))
-            row["Delta_РАЗОМ"] = row["Fact_РАЗОМ"] - row["Plan_РАЗОМ"]
-            row["Pct_РАЗОМ"]   = (
-                (row["Fact_РАЗОМ"] / row["Plan_РАЗОМ"] - 1) * 100
-                if row["Plan_РАЗОМ"] != 0 else None
-            )
-            rows.append(row)
-
-    if not rows:
+    """
+    Швидка зведена по ТТ без подвійного циклу ТТ × Стаття.
+    Раніше для кожного ТТ і кожної статті окремо запускались groupby.
+    Тепер один groupby рахує всі місяці одразу.
+    """
+    if df_filtered is None or df_filtered.empty or not articles_to_show:
         return pd.DataFrame()
 
-    df_tt = pd.DataFrame(rows)
-    num_cols = ([f"plan_{MONTH_LABELS[m]}" for m in range(1, 13)] +
-                [f"fact_{MONTH_LABELS[m]}" for m in range(1, 13)] +
-                ["Plan_РАЗОМ", "Fact_РАЗОМ", "Delta_РАЗОМ"])
+    df_num = _prep(df_filtered, col_month)
+    df_num = df_num[df_num[col_article].isin(articles_to_show)].copy()
+    if df_num.empty:
+        return pd.DataFrame()
 
-    df_agg = df_tt.groupby("ТТ")[num_cols].sum().reset_index()
-    df_agg["Pct_РАЗОМ"] = df_agg.apply(
-        lambda r: (r["Fact_РАЗОМ"] / r["Plan_РАЗОМ"] - 1) * 100
-        if r["Plan_РАЗОМ"] != 0 else None, axis=1
+    df_num[col_value] = pd.to_numeric(df_num[col_value], errors="coerce").fillna(0)
+
+    grp = (
+        df_num
+        .groupby([col_tt, col_article, "_m", col_plf], as_index=False, observed=True)[col_value]
+        .sum()
     )
+
+    wide = grp.pivot_table(
+        index=[col_tt, col_article],
+        columns=["_m", col_plf],
+        values=col_value,
+        aggfunc="sum",
+        fill_value=0,
+        observed=True,
+    )
+
+    rows = wide.reset_index()
+    rows = rows.rename(columns={col_tt: "ТТ", col_article: "Стаття"})
+
+    out = pd.DataFrame({
+        "ТТ": rows["ТТ"],
+        "Стаття": rows["Стаття"],
+    })
+
+    for m in range(1, 13):
+        ml = MONTH_LABELS[m]
+
+        plan_key = (m, "PL")
+        fact_key = (m, "F")
+
+        out[f"plan_{ml}"] = wide[plan_key].to_numpy() if plan_key in wide.columns else 0
+        out[f"fact_{ml}"] = wide[fact_key].to_numpy() if fact_key in wide.columns else 0
+
+    plan_cols = [f"plan_{MONTH_LABELS[m]}" for m in range(1, 13)]
+    fact_cols = [f"fact_{MONTH_LABELS[m]}" for m in range(1, 13)]
+    num_cols = plan_cols + fact_cols
+
+    out["Plan_РАЗОМ"] = out[plan_cols].sum(axis=1)
+    out["Fact_РАЗОМ"] = out[fact_cols].sum(axis=1)
+    out["Delta_РАЗОМ"] = out["Fact_РАЗОМ"] - out["Plan_РАЗОМ"]
+    out["Pct_РАЗОМ"] = np.where(
+        out["Plan_РАЗОМ"].ne(0),
+        (out["Fact_РАЗОМ"] / out["Plan_РАЗОМ"] - 1) * 100,
+        np.nan
+    )
+
+    df_agg = out.groupby("ТТ", as_index=False, observed=True)[num_cols + ["Plan_РАЗОМ", "Fact_РАЗОМ", "Delta_РАЗОМ"]].sum()
+
+    df_agg["Pct_РАЗОМ"] = np.where(
+        df_agg["Plan_РАЗОМ"].ne(0),
+        (df_agg["Fact_РАЗОМ"] / df_agg["Plan_РАЗОМ"] - 1) * 100,
+        np.nan
+    )
+
     for m in range(1, 13):
         ml = MONTH_LABELS[m]
         df_agg[f"delta_{ml}"] = df_agg[f"fact_{ml}"] - df_agg[f"plan_{ml}"]
-        df_agg[f"pct_{ml}"] = df_agg.apply(
-            lambda r, ml=ml: (r[f"fact_{ml}"] / r[f"plan_{ml}"] - 1) * 100
-            if r[f"plan_{ml}"] != 0 else None, axis=1
+        df_agg[f"pct_{ml}"] = np.where(
+            df_agg[f"plan_{ml}"].ne(0),
+            (df_agg[f"fact_{ml}"] / df_agg[f"plan_{ml}"] - 1) * 100,
+            np.nan
         )
+
     return df_agg
-
-
-# ── HTML / Styling helpers ────────────────────────────────────────────────────
 
 def _th(bg_color):
     return (f"background:{bg_color};color:white;font-weight:bold;border:1px solid #aaa;"
@@ -1676,7 +1690,7 @@ def _build_tt_display_map(df_src, col_tt, col_division=None):
     work[col_division] = work[col_division].where(work[col_division].notna(), "")
 
     display_map = {}
-    for tt_key, vals in work.groupby(col_tt)[col_division]:
+    for tt_key, vals in work.groupby(col_tt, observed=True)[col_division]:
         clean_vals = [str(v).strip() for v in vals.tolist() if str(v).strip() and str(v).strip().lower() != "nan"]
         display_map[tt_key] = clean_vals[0] if clean_vals else tt_key
     return display_map
@@ -1987,7 +2001,7 @@ def render_article_block(title, table_df, df, df_filtered,
         sub = df_filtered[(df_filtered[col_article] == title) & (df_filtered[col_plf] == "F")].copy()
         sub[col_value] = pd.to_numeric(sub[col_value], errors="coerce")
         if not sub.empty and col_tt in sub.columns:
-            tt_totals   = sub.groupby(col_tt)[col_value].sum().dropna().sort_values()
+            tt_totals   = sub.groupby(col_tt, observed=True)[col_value].sum().dropna().sort_values()
             n           = min(3, len(tt_totals))
             best_series = _display_tt_series_index(tt_totals.head(n), df_filtered, col_tt, col_division)
             worst_series = _display_tt_series_index(tt_totals.tail(n).iloc[::-1], df_filtered, col_tt, col_division)
@@ -2111,7 +2125,7 @@ def render_ratio_article_block(title, table_df, df, df_filtered,
         if col_plf and col_plf in sub.columns:
             sub = sub[sub[col_plf] == "F"]
         if not sub.empty and col_tt in sub.columns:
-            tt_avgs     = sub.groupby(col_tt)[col_ratio].mean().dropna().sort_values()
+            tt_avgs     = sub.groupby(col_tt, observed=True)[col_ratio].mean().dropna().sort_values()
             n           = min(3, len(tt_avgs))
             best_series = _display_tt_series_index(tt_avgs.head(n), df_filtered, col_tt, col_division)
             worst_series = _display_tt_series_index(tt_avgs.tail(n).iloc[::-1], df_filtered, col_tt, col_division)
@@ -2231,7 +2245,7 @@ def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
       </span>
     </div>""", unsafe_allow_html=True)
 
-    sum_val = tt_table.groupby(col_tt)[val_col].mean().reset_index()
+    sum_val = tt_table.groupby(col_tt, observed=True)[val_col].mean().reset_index()
     n_tt    = st.slider("Кількість магазинів (% в ТО)", 1, 100, 10, key="ratio_n_tt_slider")
     top     = sum_val.sort_values(val_col, ascending=True).head(n_tt)
     antitop = sum_val.sort_values(val_col, ascending=False).head(n_tt)
@@ -2530,7 +2544,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         heat_display = _replace_tt_index_with_division(heat, df_filtered, col_tt, col_division)
         write_df_sheet("Heatmap", heat_display, header_color="5b2d8e")
 
-        sum_val = tt_table.groupby(col_tt)[val_col].sum().reset_index()
+        sum_val = tt_table.groupby(col_tt, observed=True)[val_col].sum().reset_index()
         sum_val["Підрозділ"] = sum_val[col_tt].map(lambda v: display_label(v, tt_display_map))
         top_df = sum_val.sort_values(val_col, ascending=True).head(50)[["Підрозділ", val_col]]
         anti_df = sum_val.sort_values(val_col, ascending=False).head(50)[["Підрозділ", val_col]]
@@ -2547,7 +2561,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             heat_r_display = _replace_tt_index_with_division(heat_r, df_filtered, col_tt, col_division)
             write_df_sheet("Heatmap_%_ТО", heat_r_display, header_color="085f63", number_format=PCT_VALUE_FMT)
 
-            sum_val_r = tt_table_r.groupby(col_tt)[val_col_r].mean().reset_index()
+            sum_val_r = tt_table_r.groupby(col_tt, observed=True)[val_col_r].mean().reset_index()
             sum_val_r["Підрозділ"] = sum_val_r[col_tt].map(lambda v: display_label(v, tt_display_map))
             top_r = sum_val_r.sort_values(val_col_r, ascending=True).head(50)[["Підрозділ", val_col_r]]
             anti_r = sum_val_r.sort_values(val_col_r, ascending=False).head(50)[["Підрозділ", val_col_r]]
@@ -2567,7 +2581,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                 all_fact[combo_col], valid_selected_factors = _make_combo_col(all_fact, selected_factors)
                 if not valid_selected_factors:
                     continue
-                combo_impact = all_fact.groupby([combo_col, "_m"], as_index=False)[col_value].agg(
+                combo_impact = all_fact.groupby([combo_col, "_m"], as_index=False, observed=True)[col_value].agg(
                     Середнє="mean", Кількість="count", Сума="sum", Відхилення="std"
                 )
                 combo_impact["Стаття"] = article
@@ -2582,7 +2596,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                     all_fact_r[combo_col], valid_selected_factors = _make_combo_col(all_fact_r, selected_factors)
                     if not valid_selected_factors:
                         continue
-                    combo_r = all_fact_r.groupby([combo_col, "_m"], as_index=False)[col_ratio].agg(
+                    combo_r = all_fact_r.groupby([combo_col, "_m"], as_index=False, observed=True)[col_ratio].agg(
                         Середнє="mean", Кількість="count", Сума="sum", Відхилення="std"
                     )
                     combo_r["Стаття"] = article
@@ -2754,7 +2768,7 @@ def main():
             break
 
     # Pre-filter for TT list (без впливу на df — повний датасет зберігається)
-    df_pre = df.copy()
+    df_pre = df
     if year_val:   df_pre = df_pre[df_pre[col_year].isin(year_val)]
     if month_val:  df_pre = df_pre[df_pre[col_month].isin(month_val)]
     if level0_val: df_pre = df_pre[df_pre[col_level0].isin(level0_val)]
@@ -2805,7 +2819,12 @@ def main():
     show_ratio_heatmap = st.sidebar.checkbox("Показати Heatmap % в ТО", value=True,
                                               key="show_ratio_heatmap") if col_ratio else False
 
+    # Одноразова підготовка важких колонок після вибору мапінгу.
+    # Далі всі функції бачать готову _m і не перераховують місяці десятки разів.
+    df = _prep(df, col_month)
     df[col_value] = pd.to_numeric(df[col_value], errors="coerce")
+    if col_ratio and col_ratio in df.columns:
+        df[col_ratio] = pd.to_numeric(df[col_ratio], errors="coerce")
 
     # ── apply_filters: df залишається ПОВНИМ (для норм), df_filtered — для відображення ──
     def apply_filters(d):
@@ -2817,7 +2836,7 @@ def main():
             d = d[d[col_e].isin(vals_e)]
         return d
 
-    df_filtered = apply_filters(df).copy()
+    df_filtered = apply_filters(df)
 
     def _get_active_single_tt_from_filter_or_slicer():
         """
@@ -2925,17 +2944,28 @@ def main():
       {meta_html}
     </div>""", unsafe_allow_html=True)
 
-    # ── Tabs layout ───────────────────────────────────────────────────────────
-    tab_analysis, tab_combo, tab_pivot, tab_heatmap, tab_statistics, tab_export = st.tabs([
-        "📊 Аналіз по статтях",
-        "🧩 Комбінації факторів",
-        "📋 Зведені таблиці",
-        "🌡️ Heatmap / TOP",
-        "📊 Статистика факторів",
-        "📥 Експорт",
-    ])
+    # ── Lazy tabs layout ──────────────────────────────────────────────────────
+    # st.tabs() рахує всі вкладки одразу. segmented_control рендерить тільки активну,
+    # тому перемикання та оновлення даних значно швидші без кешування.
+    active_tab = st.segmented_control(
+        "Вкладка",
+        [
+            "📊 Аналіз по статтях",
+            "🧩 Комбінації факторів",
+            "📋 Зведені таблиці",
+            "🌡️ Heatmap / TOP",
+            "📊 Статистика факторів",
+            "📥 Експорт",
+        ],
+        default="📊 Аналіз по статтях",
+        key="active_main_tab",
+    )
 
-    with tab_analysis:
+    metric_col = "Fact"
+    pivot_df = pd.DataFrame()
+    df_tt_agg = pd.DataFrame()
+
+    if active_tab == "📊 Аналіз по статтях":
             # ── Article blocks ────────────────────────────────────────────────────────
             for art_idx, article in enumerate(articles_to_show):
                 st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
@@ -2975,7 +3005,7 @@ def main():
                     )
 
 
-    with tab_combo:
+    if active_tab == "🧩 Комбінації факторів":
             # ── Combined factor impact analysis ───────────────────────────────
             render_combined_factor_impact_tab(
                 df=df,
@@ -2990,7 +3020,7 @@ def main():
                 group_factors=group_factors,
             )
 
-    with tab_pivot:
+    if active_tab == "📋 Зведені таблиці":
             # ── Pivot table ───────────────────────────────────────────────────────────
             st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
             st.subheader("📋 Зведена таблиця")
@@ -3147,7 +3177,7 @@ def main():
                     file_name="tt_pivot.csv", mime="text/csv", key="tt_pivot_csv",
                 )
 
-    with tab_heatmap:
+    if active_tab == "🌡️ Heatmap / TOP":
             # ── Heatmap ───────────────────────────────────────────────────────────────
             st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
             st.subheader("🌡️ Карта аномалій по магазинах")
@@ -3169,7 +3199,7 @@ def main():
 
                 st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
                 st.subheader("🏆 TOP / ANTITOP магазинів")
-                sum_val = tt_table.groupby(col_tt)[val_col].sum().reset_index()
+                sum_val = tt_table.groupby(col_tt, observed=True)[val_col].sum().reset_index()
                 n_tt    = st.slider("Кількість магазинів", 1, 100, 10)
                 top     = sum_val.sort_values(val_col, ascending=True).head(n_tt)
                 antitop = sum_val.sort_values(val_col, ascending=False).head(n_tt)
@@ -3208,7 +3238,7 @@ def main():
                     col_division=col_division,
                 )
 
-    with tab_statistics:
+    if active_tab == "📊 Статистика факторів":
             # ── Statistical factor analysis ──────────────────────────────────────────
             render_statistical_analysis_tab(
                 df=df,
@@ -3219,10 +3249,28 @@ def main():
                 group_factors=group_factors,
             )
 
-    with tab_export:
+    if active_tab == "📥 Експорт":
             # ── Export ────────────────────────────────────────────────────────────────
             st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
             st.subheader("📥 Експорт в Excel")
+
+            # Дані для експорту формуємо тільки при відкритті вкладки експорту.
+            metric_col = "Fact"
+            rows_pivot = []
+            for article in articles_to_show:
+                tdf = build_article_monthly(
+                    df, df_filtered, col_tt, col_article, col_month, col_value,
+                    col_plf, article, tt_val, group_factors
+                )
+                row = {"Стаття": article}
+                for m in range(1, 13):
+                    row[MONTH_LABELS[m]] = tdf.loc[m, metric_col]
+                row["РАЗОМ"] = sum(tdf.loc[m, metric_col] for m in range(1, 13))
+                rows_pivot.append(row)
+            pivot_df = pd.DataFrame(rows_pivot).set_index("Стаття") if rows_pivot else pd.DataFrame()
+            df_tt_agg = build_tt_pivot(
+                df_filtered, col_tt, col_article, col_month, col_value, col_plf, articles_to_show
+            )
 
             export_sections = [
                 "✅ Зведена таблиця (статті)",
