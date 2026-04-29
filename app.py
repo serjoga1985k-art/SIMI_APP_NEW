@@ -4,7 +4,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-pd.set_option("styler.render.max_elements", 2**31 - 1)
+# Для великих файлів не ставимо 2**31 - 1: це може різко збільшити памʼять під Styler.
+pd.set_option("styler.render.max_elements", 300_000)
+try:
+    pd.options.mode.copy_on_write = True  # pandas 2.x: менше зайвих копій при фільтрації
+except Exception:
+    pass
 
 # ── Constants ────────────────────────────────────────────────────────────────
 MONTH_MAP = {
@@ -40,25 +45,60 @@ def get_month_num(series):
     return series.astype(str).str.strip().str.lower().map(month_map_lower).fillna(0).astype("int16")
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
 def load_excel(file_bytes, file_name, sheet_name):
-    """Швидке читання Excel без кешування + зменшення памʼяті."""
+    """
+    Швидке читання Excel для великих файлів.
+    Кешується на 1 годину: при перемиканні фільтрів Excel не перечитується заново.
+    """
     import os
+
     buf = io.BytesIO(file_bytes)
     ext = os.path.splitext(file_name)[1].lower()
     engine = "pyxlsb" if ext == ".xlsb" else None
 
+    read_kwargs = {"sheet_name": sheet_name}
     if engine:
-        df = pd.read_excel(buf, sheet_name=sheet_name, engine=engine)
-    else:
-        df = pd.read_excel(buf, sheet_name=sheet_name)
+        read_kwargs["engine"] = engine
 
-    df.columns = df.columns.str.strip()
+    df = pd.read_excel(buf, **read_kwargs)
+    df.columns = df.columns.astype(str).str.strip()
+    df = _optimize_df_types(df)
+    return df
 
-    for c in df.select_dtypes(include=["float64"]).columns:
-        df[c] = pd.to_numeric(df[c], downcast="float")
-    for c in df.select_dtypes(include=["int64"]).columns:
-        df[c] = pd.to_numeric(df[c], downcast="integer")
 
+def _optimize_df_types(df):
+    """
+    Оптимізація памʼяті без агресивного переведення тексту в category.
+    Category не застосовуємо автоматично, бо в Streamlit/фільтрах часто виникає
+    помилка Cannot setitem on a Categorical with a new category.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+
+    float_cols = out.select_dtypes(include=["float64"]).columns
+    for c in float_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce", downcast="float")
+
+    int_cols = out.select_dtypes(include=["int64"]).columns
+    for c in int_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce", downcast="integer")
+
+    return out
+
+
+def _ensure_numeric_inplace(df, cols):
+    """Безпечно приводить потрібні колонки до чисел один раз."""
+    if df is None or df.empty:
+        return df
+    for c in cols:
+        if c and c in df.columns:
+            if not pd.api.types.is_numeric_dtype(df[c]):
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+            if str(df[c].dtype) == "float64":
+                df[c] = pd.to_numeric(df[c], downcast="float")
     return df
 
 
@@ -131,6 +171,11 @@ def auto_map_columns(df):
             exact=["Значение", "Значення", "Value", "Amount"],
             contains=["знач", "value", "amount", "сума"]
         ),
+        "col_kwh": _find_col_by_keywords(
+            cols,
+            exact=["ЕЕ_кВт", "ЕЕ кВт", "EE_kWh", "EE kWh", "кВт", "kWh"],
+            contains=["ее_квт", "ее квт", "квт", "kwh"]
+        ),
         "col_article": _find_col_by_keywords(
             cols,
             exact=["Стаття бюджету", "Статья бюджета", "Article"],
@@ -187,7 +232,12 @@ def _select_col(label, cols, state_key, allow_empty=False, help=None):
 
 
 def _prep(df, col_month):
-    """Add _m column only when needed. Avoids repeated heavy copies."""
+    """
+    Додає _m лише один раз. Для зрізів робить мінімальну копію тільки тоді,
+    коли _m ще немає. Це зменшує повторні копії на великих файлах.
+    """
+    if df is None or df.empty:
+        return df
     if "_m" in df.columns:
         return df
     out = df.copy()
@@ -208,16 +258,12 @@ def _plan_rows(df, col_plf):
 def _make_combo_col(df, factors):
     """Швидке формування тексту комбінації факторів без apply(axis=1)."""
     valid_factors = [f for f in factors if f in df.columns]
-
     if not valid_factors:
         return pd.Series("", index=df.index), []
 
-    # temp.agg(" | ".join, axis=1) на великих файлах повільний.
-    # str.cat у циклі по кількості факторів працює значно швидше.
-    combo = df[valid_factors[0]].astype("string").fillna("").str.strip()
-
+    combo = df[valid_factors[0]].where(df[valid_factors[0]].notna(), "").astype(str).str.strip()
     for factor in valid_factors[1:]:
-        part = df[factor].astype("string").fillna("").str.strip()
+        part = df[factor].where(df[factor].notna(), "").astype(str).str.strip()
         combo = combo.str.cat(part, sep=" | ")
 
     combo = (
@@ -226,8 +272,40 @@ def _make_combo_col(df, factors):
         .str.replace(r"(\s*\|\s*){2,}", " | ", regex=True)
         .str.strip(" |")
     )
-
     return combo, valid_factors
+
+
+def _smooth_chart_series(values, drop_ratio=0.72):
+    """
+    Згладжує тільки графік: прибирає різкі одиночні провали між двома нормальними місяцями.
+    Дані в таблицях не змінюються.
+    """
+    ser = pd.Series(values, dtype="float64").replace([np.inf, -np.inf], np.nan)
+
+    if ser.dropna().shape[0] < 3:
+        return ser.fillna(0)
+
+    out = ser.copy()
+
+    for i in range(1, len(ser) - 1):
+        prev_v = ser.iloc[i - 1]
+        cur_v = ser.iloc[i]
+        next_v = ser.iloc[i + 1]
+
+        if pd.isna(prev_v) or pd.isna(cur_v) or pd.isna(next_v):
+            continue
+
+        neighbor_avg = (prev_v + next_v) / 2
+        if neighbor_avg == 0 or pd.isna(neighbor_avg):
+            continue
+
+        # якщо точка різко нижча за сусідні — замінюємо її на мʼяке середнє
+        if cur_v < neighbor_avg * drop_ratio and cur_v < prev_v and cur_v < next_v:
+            out.iloc[i] = neighbor_avg
+
+    # легке згладження, щоб лінія не виглядала ламаною з різкими піками
+    out = out.interpolate(limit_direction="both")
+    return out.fillna(0)
 
 def _build_global_avg(df_all_fact, col_value, col_article, col_tt,
                       group_factors, agg_fn="mean"):
@@ -270,7 +348,7 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
     art_filt = _prep(df_filtered[df_filtered[col_article] == selected_art], col_month)
 
     if art_filt.empty:
-        return pd.DataFrame(0.0, index=range(1, 13), columns=["Plan", "Fact", "Average", "Delta"])
+        return pd.DataFrame(0.0, index=range(1, 13), columns=["Plan", "Fact", "Average", "Delta", "DeltaPlan", "DeltaPlan_%"])
 
     if not selected_tts:
         selected_tts = art_filt[col_tt].dropna().unique().tolist()
@@ -311,6 +389,14 @@ def build_article_monthly(df, df_filtered, col_tt, col_article, col_month,
     merged.index.name = "month"
     merged.loc[merged["Fact"] == 0, "Average"] = 0
     merged["Delta"] = merged["Fact"] - merged["Average"]
+    # Нова метрика для основної таблиці/графіка: Факт − План
+    merged["DeltaPlan"] = merged["Fact"] - merged["Plan"]
+
+    # NEW: відносне відхилення Факт / План у % для першої абсолютної таблиці
+    merged["DeltaPlan_%"] = (
+        (merged["Fact"] / merged["Plan"].replace(0, np.nan) - 1) * 100
+    ).replace([np.inf, -np.inf], np.nan).fillna(0)
+
     return merged
 
 
@@ -336,7 +422,7 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
     art_filt = _prep(df_filtered[df_filtered[col_article].eq(selected_art)], col_month)
 
     if art_filt.empty:
-        return pd.DataFrame(0.0, index=range(1, 13), columns=["Plan", "Fact", "Average", "Delta"])
+        return pd.DataFrame(0.0, index=range(1, 13), columns=["Plan", "Fact", "Average", "Delta", "DeltaPlan"])
 
     if not selected_tts:
         selected_tts = art_filt[col_tt].dropna().unique().tolist()
@@ -449,6 +535,8 @@ def build_ratio_monthly(df_filtered, col_tt, col_article, col_month,
 
     merged.index.name = "month"
     merged["Delta"] = merged["Fact"] - merged["Average"]
+    # Нова метрика для % таблиці/графіка: Факт % − План %
+    merged["DeltaPlan"] = merged["Fact"] - merged["Plan"]
 
     return merged
 
@@ -601,12 +689,14 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
     )
     avg_line["Місяць"] = avg_line["_m"].map(MONTH_LABELS)
 
+    avg_line["Середнє_графік"] = _smooth_chart_series(avg_line["Середнє"])
+
     fig.add_trace(go.Scatter(
         x=avg_line["Місяць"],
-        y=avg_line["Середнє"],
+        y=avg_line["Середнє_графік"],
         name="Середнє по вибраних комбінаціях",
         mode="lines",
-        line=dict(width=4, dash="dash"),
+        line=dict(width=4, dash="dash", shape="spline", smoothing=1.2),
         hovertemplate=(
             "<b>Середнє по комбінаціях</b><br>"
             "Місяць: %{x}<br>"
@@ -618,11 +708,12 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
         value_data = chart_data[chart_data[combo_col] == combo].copy()
         value_data = value_data.sort_values("_m")
 
-        text_values = [f"{v:,.0f}" for v in value_data["Середнє"]] if max_lines <= 8 else None
+        value_data["Середнє_графік"] = _smooth_chart_series(value_data["Середнє"])
+        text_values = [f"{v:,.0f}" for v in value_data["Середнє_графік"]] if max_lines <= 8 else None
 
         fig.add_trace(go.Scatter(
             x=value_data["Місяць"],
-            y=value_data["Середнє"],
+            y=value_data["Середнє_графік"],
             name=str(combo),
             mode="lines+markers+text" if max_lines <= 8 else "lines+markers",
             text=text_values,
@@ -632,7 +723,7 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
                 value_data["Сума"].fillna(0),
                 value_data["Відхилення"].fillna(0),
             ], axis=-1),
-            line=dict(width=2),
+            line=dict(width=2, shape="spline", smoothing=1.2),
             marker=dict(
                 size=np.clip(value_data["Кількість"].fillna(1).astype(float) + 5, 7, 18),
                 line=dict(width=1)
@@ -647,15 +738,28 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
             )
         ))
 
+    # FIX: адаптивна розмірність графіка для вкладки "Вплив комбінації факторів".
+    lines_count = int(chart_data[combo_col].nunique())
+    dynamic_height = max(460, min(950, 420 + lines_count * 28))
+
     fig.update_layout(
         title=f"Динаміка впливу комбінації: {' + '.join(selected_factors)}",
         xaxis_title="Місяць",
         yaxis_title="Середнє значення",
-        height=560,
+        height=dynamic_height,
         hovermode="x unified",
-        xaxis=dict(categoryorder="array", categoryarray=MONTHS_LIST),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.38, xanchor="left", x=0),
-        margin=dict(t=70, b=150, l=20, r=20),
+        xaxis=dict(categoryorder="array", categoryarray=MONTHS_LIST, automargin=True),
+        yaxis=dict(automargin=True, zeroline=True, rangemode="tozero"),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.28,
+            xanchor="left",
+            x=0,
+            font=dict(size=10),
+            itemwidth=30,
+        ),
+        margin=dict(t=80, b=190, l=60, r=40),
     )
 
     st.plotly_chart(
@@ -815,12 +919,14 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
     )
     avg_line["Місяць"] = avg_line["_m"].map(MONTH_LABELS)
 
+    avg_line["Середнє_графік"] = _smooth_chart_series(avg_line["Середнє"], drop_ratio=0.75)
+
     fig.add_trace(go.Scatter(
         x=avg_line["Місяць"],
-        y=avg_line["Середнє"],
+        y=avg_line["Середнє_графік"],
         name="Середнє по вибраних комбінаціях",
         mode="lines",
-        line=dict(width=4, dash="dash"),
+        line=dict(width=4, dash="dash", shape="spline", smoothing=1.2),
         hovertemplate=(
             "<b>Середнє по комбінаціях</b><br>"
             "Місяць: %{x}<br>"
@@ -832,11 +938,12 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
         value_data = chart_data[chart_data[combo_col] == combo].copy()
         value_data = value_data.sort_values("_m")
 
-        text_values = [f"{v:.2f}%" for v in value_data["Середнє"]] if max_lines <= 8 else None
+        value_data["Середнє_графік"] = _smooth_chart_series(value_data["Середнє"], drop_ratio=0.75)
+        text_values = [f"{v:.2f}%" for v in value_data["Середнє_графік"]] if max_lines <= 8 else None
 
         fig.add_trace(go.Scatter(
             x=value_data["Місяць"],
-            y=value_data["Середнє"],
+            y=value_data["Середнє_графік"],
             name=str(combo),
             mode="lines+markers+text" if max_lines <= 8 else "lines+markers",
             text=text_values,
@@ -846,7 +953,7 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
                 value_data["Сума"].fillna(0),
                 value_data["Відхилення"].fillna(0),
             ], axis=-1),
-            line=dict(width=2),
+            line=dict(width=2, shape="spline", smoothing=1.2),
             marker=dict(
                 size=np.clip(value_data["Кількість"].fillna(1).astype(float) + 5, 7, 18),
                 line=dict(width=1)
@@ -861,16 +968,28 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
             )
         ))
 
+    # FIX: адаптивна розмірність % графіка для вкладки "Вплив комбінації факторів".
+    lines_count = int(chart_data[combo_col].nunique())
+    dynamic_height = max(460, min(950, 420 + lines_count * 28))
+
     fig.update_layout(
         title=f"Динаміка впливу комбінації факторів (% в ТО): {' + '.join(selected_factors)}",
         xaxis_title="Місяць",
         yaxis_title="Середнє значення (%)",
-        yaxis=dict(tickformat=".2f", ticksuffix="%", zeroline=True),
-        height=560,
+        yaxis=dict(tickformat=".2f", ticksuffix="%", zeroline=True, automargin=True, rangemode="tozero"),
+        height=dynamic_height,
         hovermode="x unified",
-        xaxis=dict(categoryorder="array", categoryarray=MONTHS_LIST),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.38, xanchor="left", x=0),
-        margin=dict(t=70, b=150, l=20, r=20),
+        xaxis=dict(categoryorder="array", categoryarray=MONTHS_LIST, automargin=True),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.28,
+            xanchor="left",
+            x=0,
+            font=dict(size=10),
+            itemwidth=30,
+        ),
+        margin=dict(t=80, b=190, l=60, r=40),
     )
 
     st.plotly_chart(
@@ -1468,48 +1587,127 @@ def render_statistical_analysis_tab(df, col_article, col_value, col_plf,
 
 # ── Heatmap builders ─────────────────────────────────────────────────────────
 
+def _clean_heat_group_factors(group_factors, col_month, cols=None):
+    """
+    Для Heatmap колонка місяця не має йти як окремий текстовий фактор.
+    Місяць завжди використовується через канонічний числовий ключ _m.
+    Це дозволяє підключати "Місяць" у факторах без поломки Average/Average %.
+    """
+    clean = []
+    for f in (group_factors or []):
+        if not f or f in (col_month, "_m"):
+            continue
+        if cols is not None and f not in cols:
+            continue
+        clean.append(f)
+    return list(dict.fromkeys(clean))
+
+
 def build_heat_data(df, df_filtered, col_tt, col_article, col_month, col_value,
                     col_plf, group_factors, articles_to_show, mode):
+    """
+    Heatmap для абсолютних значень.
+
+    FIX:
+    - якщо у факторах вибрано "Місяць", він не додається в groupby як текстова колонка;
+    - місячність завжди рахується через _m;
+    - Average_Calc / Std рахуються з повного df у розрізі факторів + статті + _m;
+    - merge також іде через _m, тому Average змінюється по місяцях коректно.
+    """
     df_num = df.copy()
     df_num[col_value] = pd.to_numeric(df_num[col_value], errors="coerce")
+    df_num = _prep(df_num, col_month)
 
-    # FIX: global_avg_std — з ПОВНОГО df
+    heat_group_factors = _clean_heat_group_factors(
+        group_factors,
+        col_month,
+        cols=df_num.columns
+    )
+
+    all_fact = _fact_rows(df_num, col_plf)
+    all_fact = all_fact[all_fact[col_article].isin(articles_to_show)]
+
+    avg_grp_cols = list(dict.fromkeys(heat_group_factors + [col_article, "_m"]))
+
     global_avg_std = (
-        _fact_rows(df_num, col_plf)
-        .groupby(group_factors + [col_article], as_index=False, observed=True)[col_value]
+        all_fact
+        .groupby(avg_grp_cols, as_index=False, observed=True)[col_value]
         .agg(Average_Calc="mean", Std="std")
     )
 
     filt = df_filtered.copy()
     filt[col_value] = pd.to_numeric(filt[col_value], errors="coerce")
-    data_heat = _prep(
-        filt[(filt[col_plf] == "F") & (filt[col_article].isin(articles_to_show))],
-        col_month
-    )
+    filt = _prep(filt, col_month)
 
-    tt_grp   = list(dict.fromkeys([col_tt] + group_factors + ["_m", col_article]))
+    data_heat = _fact_rows(filt, col_plf)
+    data_heat = data_heat[data_heat[col_article].isin(articles_to_show)]
+
+    tt_grp = list(dict.fromkeys([col_tt] + heat_group_factors + ["_m", col_article]))
+
     tt_table = (
-        data_heat.groupby(tt_grp, as_index=False, observed=True)[col_value]
-        .sum().rename(columns={col_value: "Fact"})
+        data_heat
+        .groupby(tt_grp, as_index=False, observed=True)[col_value]
+        .sum()
+        .rename(columns={col_value: "Fact"})
     )
-    merge_cols = list(dict.fromkeys(group_factors + [col_article]))
-    tt_table   = pd.merge(tt_table, global_avg_std, on=merge_cols, how="left")
-    tt_table["Delta"]   = tt_table["Fact"] - tt_table["Average_Calc"]
-    tt_table["Delta_%"] = tt_table["Delta"] / tt_table["Average_Calc"].replace(0, np.nan)
-    tt_table["Z"]       = tt_table["Delta"] / tt_table["Std"].replace(0, np.nan)
 
-    val_col = {"Delta": "Delta", "Delta %": "Delta_%", "Z-score": "Z",
-               "Fact": "Fact", "Average": "Average_Calc"}[mode]
+    merge_cols = list(dict.fromkeys(heat_group_factors + [col_article, "_m"]))
 
-    heat = tt_table.pivot_table(index=col_tt, columns="_m", values=val_col, aggfunc="sum")
+    tt_table = pd.merge(
+        tt_table,
+        global_avg_std,
+        on=merge_cols,
+        how="left"
+    )
+
+    tt_table["Fact"] = pd.to_numeric(tt_table["Fact"], errors="coerce").fillna(0)
+    tt_table["Average_Calc"] = pd.to_numeric(tt_table["Average_Calc"], errors="coerce").fillna(0)
+    tt_table["Std"] = pd.to_numeric(tt_table["Std"], errors="coerce").replace(0, np.nan)
+
+    # Якщо факту в конкретному місяці немає — не показуємо норму як аномалію.
+    tt_table.loc[tt_table["Fact"].eq(0), "Average_Calc"] = 0
+
+    tt_table["Delta"] = tt_table["Fact"] - tt_table["Average_Calc"]
+    tt_table["Delta_%"] = (
+        tt_table["Delta"] / tt_table["Average_Calc"].replace(0, np.nan)
+    ).replace([np.inf, -np.inf], np.nan)
+
+    tt_table["Z"] = (
+        tt_table["Delta"] / tt_table["Std"]
+    ).replace([np.inf, -np.inf], np.nan)
+
+    val_col = {
+        "Delta": "Delta",
+        "Delta %": "Delta_%",
+        "Z-score": "Z",
+        "Fact": "Fact",
+        "Average": "Average_Calc",
+    }.get(mode, "Delta")
+
+    heat = tt_table.pivot_table(
+        index=col_tt,
+        columns="_m",
+        values=val_col,
+        aggfunc="sum"
+    )
+
     heat = _fill_heat_cols(heat)
     heat["РАЗОМ"] = heat.sum(axis=1, numeric_only=True)
+
     return heat, tt_table, val_col
 
 
 def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
                            col_ratio, col_plf, articles_to_show, mode,
                            group_factors=None):
+    """
+    Heatmap для % в ТО.
+
+    FIX:
+    - фактор "Місяць" можна вибрати у факторах групування;
+    - для розрахунку Average % він не дублюється як текстова колонка;
+    - розрахунок Average % іде через _m, тому значення коректно змінюється по місяцях.
+    """
     if group_factors is None:
         group_factors = []
 
@@ -1517,50 +1715,87 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
     df_num[col_ratio] = pd.to_numeric(df_num[col_ratio], errors="coerce")
     df_num = _prep(df_num, col_month)
 
-    has_plf   = col_plf and col_plf in df_num.columns
+    has_plf = col_plf and col_plf in df_num.columns
+
     data_heat = (
         df_num[(df_num[col_plf] == "F") & df_num[col_article].isin(articles_to_show)].copy()
         if has_plf
         else df_num[df_num[col_article].isin(articles_to_show)].copy()
     )
 
-    # FIX: global Average — з ПОВНОГО df
+    ratio_group_factors = _clean_heat_group_factors(
+        group_factors,
+        col_month,
+        cols=df_num.columns
+    )
+
     df_all_num = df.copy()
     df_all_num[col_ratio] = pd.to_numeric(df_all_num[col_ratio], errors="coerce")
     df_all_num = _prep(df_all_num, col_month)
-    avg_src    = (_fact_rows(df_all_num, col_plf) if has_plf else df_all_num)
-    avg_src    = avg_src[avg_src[col_article].isin(articles_to_show)]
 
-    if group_factors:
-        grp_cols   = list(dict.fromkeys(group_factors + [col_article, "_m"]))
-        global_avg = (avg_src.groupby(grp_cols, observed=True)[col_ratio]
-                      .mean().reset_index()
-                      .rename(columns={col_ratio: "Average_Calc"}))
-        merge_on   = grp_cols
-    else:
-        global_avg = (avg_src.groupby([col_article, "_m"], observed=True)[col_ratio]
-                      .mean().reset_index()
-                      .rename(columns={col_ratio: "Average_Calc"}))
-        merge_on   = [col_article, "_m"]
+    avg_src = (_fact_rows(df_all_num, col_plf) if has_plf else df_all_num)
+    avg_src = avg_src[avg_src[col_article].isin(articles_to_show)]
 
-    tt_grp   = list(dict.fromkeys([col_tt] + group_factors + [col_article, "_m"]))
-    tt_table = (
-        data_heat.groupby(tt_grp, as_index=False, observed=True)[col_ratio]
-        .mean().rename(columns={col_ratio: "Fact"})
+    grp_cols = list(dict.fromkeys(ratio_group_factors + [col_article, "_m"]))
+
+    global_avg = (
+        avg_src
+        .groupby(grp_cols, as_index=False, observed=True)[col_ratio]
+        .agg(Average_Calc="mean", Std="std")
     )
-    tt_table   = pd.merge(tt_table, global_avg, on=merge_on, how="left")
-    tt_table["Delta"]   = tt_table["Fact"] - tt_table["Average_Calc"]
-    tt_table["Delta_%"] = tt_table["Delta"] / tt_table["Average_Calc"].replace(0, np.nan)
-    tt_table["Std"]     = np.nan
-    tt_table["Z"]       = np.nan
 
-    val_col = {"Delta": "Delta", "Delta %": "Delta_%",
-               "Fact": "Fact", "Average": "Average_Calc"}.get(mode, "Delta")
+    tt_grp = list(dict.fromkeys([col_tt] + ratio_group_factors + [col_article, "_m"]))
 
-    heat = tt_table.pivot_table(index=col_tt, columns="_m", values=val_col, aggfunc="mean")
+    tt_table = (
+        data_heat
+        .groupby(tt_grp, as_index=False, observed=True)[col_ratio]
+        .mean()
+        .rename(columns={col_ratio: "Fact"})
+    )
+
+    tt_table = pd.merge(
+        tt_table,
+        global_avg,
+        on=grp_cols,
+        how="left"
+    )
+
+    tt_table["Fact"] = pd.to_numeric(tt_table["Fact"], errors="coerce").fillna(0)
+    tt_table["Average_Calc"] = pd.to_numeric(tt_table["Average_Calc"], errors="coerce").fillna(0)
+    tt_table["Std"] = pd.to_numeric(tt_table["Std"], errors="coerce").replace(0, np.nan)
+
+    # Якщо фактичного % немає, не показуємо Average % у цьому місяці як аномалію.
+    tt_table.loc[tt_table["Fact"].eq(0), "Average_Calc"] = 0
+
+    tt_table["Delta"] = tt_table["Fact"] - tt_table["Average_Calc"]
+    tt_table["Delta_%"] = (
+        tt_table["Delta"] / tt_table["Average_Calc"].replace(0, np.nan)
+    ).replace([np.inf, -np.inf], np.nan)
+
+    tt_table["Z"] = (
+        tt_table["Delta"] / tt_table["Std"]
+    ).replace([np.inf, -np.inf], np.nan)
+
+    val_col = {
+        "Delta": "Delta",
+        "Delta %": "Delta_%",
+        "Z-score": "Z",
+        "Fact": "Fact",
+        "Average": "Average_Calc",
+    }.get(mode, "Delta")
+
+    heat = tt_table.pivot_table(
+        index=col_tt,
+        columns="_m",
+        values=val_col,
+        aggfunc="mean"
+    )
+
     heat = _fill_heat_cols(heat)
     heat["РАЗОМ"] = heat.mean(axis=1, numeric_only=True)
+
     return heat, tt_table, val_col
+
 
 
 def _fill_heat_cols(heat):
@@ -1933,16 +2168,168 @@ def _render_shared_tt_slicer(article_idx, df_filtered, col_tt, col_article, titl
 
     return st.session_state[skey]
 
+
+# ── Cost per kWh/m³ block — only utility articles ─────────────────────────────
+
+def _is_utility_cost_article(article):
+    """Показуємо блок вартості тільки для Електроенергії та Водопостачання."""
+    a = str(article).strip().lower()
+    return ("електро" in a) or ("водопост" in a) or ("водоснаб" in a) or ("water" in a)
+
+
+def build_cost_monthly(df_filtered, col_tt, col_article, col_month,
+                       col_value, col_kwh, col_plf, selected_art, selected_tts=None):
+    """
+    Вартість = Значення / ЕЕ_кВт по місяцях.
+    Рахуємо як SUM(Значення) / SUM(ЕЕ_кВт) окремо для PL та F.
+    """
+    cols = ["Plan", "Fact", "Delta", "Delta_%"]
+    if not col_kwh or col_kwh not in df_filtered.columns:
+        return pd.DataFrame(0.0, index=range(1, 13), columns=cols)
+
+    art = _prep(df_filtered[df_filtered[col_article].eq(selected_art)], col_month)
+    if selected_tts:
+        art = art[art[col_tt].isin(selected_tts)]
+
+    if art.empty:
+        return pd.DataFrame(0.0, index=range(1, 13), columns=cols)
+
+    tmp = art[[col_plf, "_m", col_value, col_kwh]].copy()
+    tmp["_value"] = pd.to_numeric(tmp[col_value], errors="coerce")
+    tmp["_kwh"] = pd.to_numeric(tmp[col_kwh], errors="coerce")
+
+    def _calc(plf_code):
+        sub = tmp[tmp[col_plf].eq(plf_code)]
+        if sub.empty:
+            return pd.Series(0.0, index=range(1, 13))
+        g = sub.groupby("_m", observed=True)[["_value", "_kwh"]].sum()
+        out = (g["_value"] / g["_kwh"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+        return out.fillna(0).reindex(range(1, 13), fill_value=0)
+
+    plan = _calc("PL").rename("Plan")
+    fact = _calc("F").rename("Fact")
+
+    merged = pd.DataFrame(index=range(1, 13)).join(plan).join(fact).fillna(0.0)
+    merged.index.name = "month"
+    merged["Delta"] = merged["Fact"] - merged["Plan"]
+    merged["Delta_%"] = (
+        (merged["Fact"] / merged["Plan"].replace(0, np.nan) - 1) * 100
+    ).replace([np.inf, -np.inf], np.nan).fillna(0)
+    return merged
+
+
+def render_cost_article_block(title, table_df, df_filtered,
+                              col_tt, col_article, col_month, col_value,
+                              col_kwh, col_plf, tt_val, article_idx,
+                              active_tt=None, col_division=None):
+    """Окрема таблиця + графік вартості Значення / ЕЕ_кВт."""
+    if not _is_utility_cost_article(title):
+        return
+
+    if not col_kwh or col_kwh not in df_filtered.columns:
+        st.info("Для таблиці вартості потрібно обрати колонку ЕЕ_кВт у налаштуваннях колонок.")
+        return
+
+    if active_tt != "__ALL__" and active_tt is not None:
+        display_df = build_cost_monthly(
+            df_filtered, col_tt, col_article, col_month, col_value,
+            col_kwh, col_plf, title, [active_tt]
+        )
+    else:
+        display_df = table_df
+
+    rows_cfg = [
+        ("План вартість", "Plan", "#ffffff", "#333333"),
+        ("Факт вартість", "Fact", "#e8f4ff", TEAL_HDR),
+        ("Відхилення Fact−Plan", "Delta", "#fff9e0", "#b8860b"),
+        ("Відхилення Fact/Plan %", "Delta_%", "#eefaf7", TEAL_HDR),
+    ]
+
+    tt_display_map = _build_tt_display_map(df_filtered, col_tt, col_division)
+    active_tt_label = _tt_display_label(active_tt, tt_display_map) if active_tt not in (None, "__ALL__") else active_tt
+    badge = (f'<span style="margin-left:10px;background:{TEAL};color:white;font-size:0.78rem;'
+             f'padding:2px 10px;border-radius:10px;">📍 {active_tt_label}</span>'
+             if active_tt not in (None, "__ALL__") else "")
+
+    st.markdown(f"""
+    <div style="margin-top:12px;margin-bottom:4px;">
+      <span style="background:{TEAL};color:white;font-weight:700;padding:4px 14px;
+                   font-size:0.9rem;border-radius:2px;">💧⚡ Визначення вартості: {title}</span>{badge}
+    </div>""", unsafe_allow_html=True)
+
+    th = _th(TEAL_HDR)
+    html = (f'<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;margin-bottom:6px;">'
+            f'<thead><tr><th style="{th}">Показник</th>'
+            + "".join(f'<th style="{th}">{m}</th>' for m in MONTHS_LIST)
+            + f'<th style="{th}">Разом</th></tr></thead><tbody>')
+
+    total_plan_num = total_plan_den = total_fact_num = total_fact_den = 0.0
+    # Разом для вартості рахуємо як загальна сума Значення / загальна сума ЕЕ_кВт.
+    src = _prep(df_filtered[df_filtered[col_article].eq(title)], col_month)
+    if active_tt not in (None, "__ALL__"):
+        src = src[src[col_tt].eq(active_tt)]
+    elif tt_val:
+        src = src[src[col_tt].isin(tt_val)]
+    if not src.empty:
+        src_val = pd.to_numeric(src[col_value], errors="coerce")
+        src_kwh = pd.to_numeric(src[col_kwh], errors="coerce")
+        total_plan_num = src_val[src[col_plf].eq("PL")].sum()
+        total_plan_den = src_kwh[src[col_plf].eq("PL")].sum()
+        total_fact_num = src_val[src[col_plf].eq("F")].sum()
+        total_fact_den = src_kwh[src[col_plf].eq("F")].sum()
+    total_plan = total_plan_num / total_plan_den if total_plan_den else np.nan
+    total_fact = total_fact_num / total_fact_den if total_fact_den else np.nan
+    total_delta = total_fact - total_plan if pd.notna(total_fact) and pd.notna(total_plan) else np.nan
+    total_delta_pct = ((total_fact / total_plan - 1) * 100) if pd.notna(total_fact) and pd.notna(total_plan) and total_plan != 0 else np.nan
+    totals = {"Plan": total_plan, "Fact": total_fact, "Delta": total_delta, "Delta_%": total_delta_pct}
+
+    for label, col, bg, color in rows_cfg:
+        html += f'<tr style="background:{bg};"><td style="{TL}color:{color};">{label}</td>'
+        for m in range(1, 13):
+            v = display_df.loc[m, col]
+            html += _fmt_pct_html(v) if col == "Delta_%" else (f'<td style="{TD}{"color:#c0392b;" if pd.notna(v) and v < 0 else ""}">{v:,.2f}</td>' if pd.notna(v) else f'<td style="{TD}background-color:white !important;color:black !important;"></td>')
+        total = totals.get(col, np.nan)
+        if pd.isna(total):
+            total_html = ""
+        elif col == "Delta_%":
+            total_html = f"{total:.2f}%"
+        else:
+            total_html = f"{total:,.2f}"
+        total_color = "color:#c0392b;" if pd.notna(total) and total < 0 else ""
+        html += f'<td style="{TD}font-weight:700;{total_color}">{total_html}</td></tr>'
+    html += "</tbody></table></div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+    fig = go.Figure([
+        go.Bar(x=MONTHS_LIST, y=display_df["Plan"], name="План вартість", marker_color=GREY),
+        go.Bar(x=MONTHS_LIST, y=display_df["Fact"], name="Факт вартість", marker_color=TEAL),
+        go.Scatter(x=MONTHS_LIST, y=display_df["Delta"], name="Відхилення Fact−Plan",
+                   line=dict(color=YELLOW, width=2, dash="dot")),
+    ])
+    fig.update_layout(
+        title=f"Динаміка вартості Значення / ЕЕ_кВт — {title}",
+        height=300,
+        margin=dict(t=45, b=50, l=10, r=10),
+        barmode="group",
+        hovermode="x unified",
+        legend=dict(orientation="h", y=-0.2, x=0),
+    )
+    st.plotly_chart(fig, use_container_width=True, key=f"cost_chart_{article_idx}_{active_tt}")
+
 # ── Article block — absolute ─────────────────────────────────────────────────
 
 def render_article_block(title, table_df, df, df_filtered,
                           col_tt, col_article, col_month, col_value, col_plf,
-                          group_factors, tt_val, article_idx, active_tt=None, col_division=None):
+                          group_factors, tt_val, article_idx, active_tt=None, col_division=None,
+                          metric_label="Значення"):
+    metric_suffix = "" if metric_label == "Значення" else f" ({metric_label})"
     rows_cfg = [
-        ("План",    "Plan",    "#ffffff", "#333333"),
-        ("Факт",    "Fact",    "#e8d5f5", PURPLE),
-        ("Average", "Average", "#fde8e8", RED_LINE),
-        ("Дельта",  "Delta",   "#fff9e0", "#b8860b"),
+        (f"План{metric_suffix}",                "Plan",      "#ffffff", "#333333"),
+        (f"Факт{metric_suffix}",                "Fact",      "#e8d5f5", PURPLE),
+        (f"Average{metric_suffix}",             "Average",   "#fde8e8", RED_LINE),
+        ("Дельта Fact−Average", "Delta",       "#fff9e0", "#b8860b"),
+        ("Дельта Fact−Plan",    "DeltaPlan",   "#eaf7ea", GREEN_HDR),
+        ("Відхилення Fact/Plan %", "DeltaPlan_%", "#eefaf7", TEAL_HDR),
     ]
     th = _th(GREEN_HDR)
 
@@ -1967,6 +2354,8 @@ def render_article_block(title, table_df, df, df_filtered,
     <div style="margin-top:20px;margin-bottom:4px;">
       <span style="background:{GREEN_HDR};color:white;font-weight:700;padding:4px 14px;
                    font-size:0.9rem;border-radius:2px;">{title}</span>{badge}
+      <span style="margin-left:10px;background:#f4f0fa;color:#5b2d8e;font-size:0.72rem;
+                   padding:2px 8px;border-radius:3px;">📌 Метрика: {metric_label}</span>
     </div>""", unsafe_allow_html=True)
 
     html = (f'<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;'
@@ -1975,13 +2364,30 @@ def render_article_block(title, table_df, df, df_filtered,
             + "".join(f'<th style="{th}">{m}</th>' for m in MONTHS_LIST)
             + f'<th style="{th}">Разом</th></tr></thead><tbody>')
     for label, col, bg, color in rows_cfg:
-        vals  = [display_df.loc[m, col] for m in range(1, 13)]
-        total = sum(vals)
+        vals = [display_df.loc[m, col] for m in range(1, 13)]
+
+        # Для % відхилення Fact/Plan підсумок рахуємо не як суму місячних %,
+        # а як загальний Fact / загальний Plan − 1.
+        if col == "DeltaPlan_%":
+            plan_total = sum(display_df.loc[m, "Plan"] for m in range(1, 13))
+            fact_total = sum(display_df.loc[m, "Fact"] for m in range(1, 13))
+            total = ((fact_total / plan_total - 1) * 100) if plan_total != 0 else np.nan
+        else:
+            total = sum(vals)
+
         html += f'<tr style="background:{bg};"><td style="{TL}color:{color};">{label}</td>'
         for v in vals:
-            html += _fmt_abs_html(v)
-        total_html = "" if pd.isna(total) else f"{total:,.0f}"
-        html += f'<td style="{TD}font-weight:700;background:{"white !important" if pd.isna(total) else "transparent"};">{total_html}</td></tr>'
+            html += _fmt_pct_html(v) if col == "DeltaPlan_%" else _fmt_abs_html(v)
+
+        if pd.isna(total):
+            total_html = ""
+        elif col == "DeltaPlan_%":
+            total_html = f"{total:.2f}%"
+        else:
+            total_html = f"{total:,.0f}"
+
+        total_color = "color:#c0392b;" if pd.notna(total) and total < 0 else ""
+        html += f'<td style="{TD}font-weight:700;{total_color}background:{"white !important" if pd.isna(total) else "transparent"};">{total_html}</td></tr>'
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
@@ -2022,7 +2428,7 @@ def render_article_block(title, table_df, df, df_filtered,
     <div style="display:flex;flex-wrap:wrap;gap:10px;background:#f9f6ff;
                 border:1px solid #d0baf5;border-radius:6px;padding:10px 16px;margin:6px 0 10px 0;">
       <div style="min-width:130px;">
-        <div style="color:#888;font-size:0.71rem;text-transform:uppercase;">Серед. Fact / міс.</div>
+        <div style="color:#888;font-size:0.71rem;text-transform:uppercase;">Серед. Fact / міс. ({metric_label})</div>
         <div style="font-size:1.1rem;font-weight:700;color:{PURPLE};">{avg_monthly:,.0f}</div>
       </div>
       <div style="min-width:130px;">
@@ -2041,8 +2447,10 @@ def render_article_block(title, table_df, df, df_filtered,
         go.Bar(x=MONTHS_LIST, y=display_df["Fact"],    name="Факт",    marker_color=PURPLE),
         go.Scatter(x=MONTHS_LIST, y=display_df["Average"], name="Average",
                    line=dict(color=RED_LINE, width=3)),
-        go.Scatter(x=MONTHS_LIST, y=display_df["Delta"],   name="Дельта",
+        go.Scatter(x=MONTHS_LIST, y=display_df["Delta"],   name="Дельта Fact−Average",
                    line=dict(color=YELLOW, dash="dot")),
+        go.Scatter(x=MONTHS_LIST, y=display_df["DeltaPlan"], name="Дельта Fact−Plan",
+                   line=dict(color=GREEN_HDR, width=2, dash="dash")),
     ])
     fig.update_layout(height=320, margin=dict(t=30, b=50, l=10, r=10),
                       barmode="group", hovermode="x unified",
@@ -2060,10 +2468,11 @@ def render_ratio_article_block(title, table_df, df, df_filtered,
         group_factors = []
 
     rows_cfg = [
-        ("План %",    "Plan",    "#e8f8f8", TEAL_HDR),
-        ("Факт %",    "Fact",    "#d0f0f0", TEAL),
-        ("Average %", "Average", "#fde8e8", RED_LINE),
-        ("Дельта %",  "Delta",   "#fff9e0", ORANGE),
+        ("План %",                "Plan",      "#e8f8f8", TEAL_HDR),
+        ("Факт %",                "Fact",      "#d0f0f0", TEAL),
+        ("Average %",             "Average",   "#fde8e8", RED_LINE),
+        ("Дельта % Fact−Average", "Delta",     "#fff9e0", ORANGE),
+        ("Дельта % Fact−Plan",    "DeltaPlan", "#eaf7ea", GREEN_HDR),
     ]
     th = _th(TEAL_HDR)
 
@@ -2165,14 +2574,16 @@ def render_ratio_article_block(title, table_df, df, df_filtered,
         go.Bar(x=MONTHS_LIST, y=display_df["Fact"],    name="Факт %",  marker_color=TEAL, opacity=0.95),
         go.Scatter(x=MONTHS_LIST, y=display_df["Average"], name="Average %",
                    line=dict(color=RED_LINE, width=3)),
-        go.Scatter(x=MONTHS_LIST, y=display_df["Delta"],   name="Δ %",
+        go.Scatter(x=MONTHS_LIST, y=display_df["Delta"],   name="Δ % Fact−Average",
                    line=dict(color=ORANGE, dash="dot")),
+        go.Scatter(x=MONTHS_LIST, y=display_df["DeltaPlan"], name="Δ % Fact−Plan",
+                   line=dict(color=GREEN_HDR, width=2, dash="dash")),
     ])
 
     # ✅ Одна спільна вісь Y для всіх показників %:
     # План %, Факт %, Average % і Δ % більше не розносяться на різні масштаби.
     y_max = pd.to_numeric(
-        display_df[["Plan", "Fact", "Average", "Delta"]].stack(),
+        display_df[["Plan", "Fact", "Average", "Delta", "DeltaPlan"]].stack(),
         errors="coerce"
     ).replace([np.inf, -np.inf], np.nan).dropna()
 
@@ -2412,7 +2823,7 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             df, df_filtered, col_tt, col_article, col_month,
             col_value, col_plf, article, tt_val, group_factors
         )
-        for label, key in [("План", "Plan"), ("Факт", "Fact"), ("Average", "Average"), ("Дельта", "Delta")]:
+        for label, key in [("План", "Plan"), ("Факт", "Fact"), ("Average", "Average"), ("Дельта Fact−Average", "Delta"), ("Дельта Fact−Plan", "DeltaPlan")]:
             row = {"Стаття": article, "Показник": label}
             vals = [tdf.loc[m, key] for m in range(1, 13)]
             for m in range(1, 13):
@@ -2422,10 +2833,10 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
     write_df_sheet("Основні_таблиці", pd.DataFrame(main_rows), index=False, header_color="2e7d32")
 
     # 3) Окремі листи по кожній статті + графік
-    row_labels = ["План", "Факт", "Average", "Дельта"]
-    row_keys = ["Plan", "Fact", "Average", "Delta"]
-    row_fills = ["FFFFFF", "e8d5f5", "fde8e8", "fff9e0"]
-    row_colors = ["333333", "5b2d8e", "c0392b", "b8860b"]
+    row_labels = ["План", "Факт", "Average", "Дельта Fact−Average", "Дельта Fact−Plan"]
+    row_keys = ["Plan", "Fact", "Average", "Delta", "DeltaPlan"]
+    row_fills = ["FFFFFF", "e8d5f5", "fde8e8", "fff9e0", "eaf7ea"]
+    row_colors = ["333333", "5b2d8e", "c0392b", "b8860b", "2e7d32"]
 
     for article in articles_to_show:
         tdf = build_article_monthly(
@@ -2479,7 +2890,8 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             go.Bar(x=MONTHS_LIST, y=[tdf.loc[m, "Plan"] for m in range(1, 13)], name="План", marker_color="#c0c0c0"),
             go.Bar(x=MONTHS_LIST, y=[tdf.loc[m, "Fact"] for m in range(1, 13)], name="Факт", marker_color="#5b2d8e"),
             go.Scatter(x=MONTHS_LIST, y=[tdf.loc[m, "Average"] for m in range(1, 13)], mode="lines+markers", name="Average", line=dict(color="#c0392b", width=2.5)),
-            go.Scatter(x=MONTHS_LIST, y=[tdf.loc[m, "Delta"] for m in range(1, 13)], mode="lines+markers", name="Дельта", line=dict(color="#f0c000", width=2), yaxis="y2"),
+            go.Scatter(x=MONTHS_LIST, y=[tdf.loc[m, "Delta"] for m in range(1, 13)], mode="lines+markers", name="Дельта Fact−Average", line=dict(color="#f0c000", width=2), yaxis="y2"),
+            go.Scatter(x=MONTHS_LIST, y=[tdf.loc[m, "DeltaPlan"] for m in range(1, 13)], mode="lines+markers", name="Дельта Fact−Plan", line=dict(color="#2e7d32", width=2, dash="dash"), yaxis="y2"),
         ])
         fig.update_layout(
             barmode="group", height=320, width=900, plot_bgcolor="white", paper_bgcolor="white",
@@ -2646,6 +3058,20 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_excel_sheet_names(file_bytes, file_name):
+    """Кешований список аркушів, щоб pd.ExcelFile не запускався на кожен rerun."""
+    import os
+    ext = os.path.splitext(file_name)[1].lower()
+    engine = "pyxlsb" if ext == ".xlsb" else None
+    if engine:
+        xl = pd.ExcelFile(io.BytesIO(file_bytes), engine=engine)
+    else:
+        xl = pd.ExcelFile(io.BytesIO(file_bytes))
+    return xl.sheet_names
+
+
 def main():
     st.set_page_config(page_title="СІМІ Dashboard", layout="wide")
     st.markdown("""
@@ -2675,10 +3101,10 @@ def main():
         st.info("Завантажте Excel-файл для початку роботи.")
         st.stop()
 
-    file_bytes = file.read()
-    xl         = pd.ExcelFile(io.BytesIO(file_bytes))
-    sheet_name = st.selectbox("Аркуш", xl.sheet_names)
-    df         = load_excel(file_bytes, file.name, sheet_name)
+    file_bytes = file.getvalue()
+    sheet_names = get_excel_sheet_names(file_bytes, file.name)
+    sheet_name = st.selectbox("Аркуш", sheet_names)
+    df = load_excel(file_bytes, file.name, sheet_name)
     cols       = df.columns.tolist()
     _init_column_state(df, file.name, sheet_name)
 
@@ -2698,6 +3124,13 @@ def main():
         with c2:
             col_month = _select_col("Month", cols, "col_month")
             col_value = _select_col("Значення", cols, "col_value")
+            col_kwh = _select_col(
+                "ЕЕ_кВт",
+                cols,
+                "col_kwh",
+                allow_empty=True,
+                help="Колонка для розрахунку вартості: Значення / ЕЕ_кВт"
+            )
         with c3:
             col_plf     = _select_col("PL / F", cols, "col_plf")
             col_article = _select_col("Стаття бюджету", cols, "col_article")
@@ -2816,15 +3249,34 @@ def main():
     st.sidebar.markdown("### 👁️ Відображення")
     show_ratio_section = st.sidebar.checkbox("Показати блок «% в ТО»", value=True,
                                               key="show_ratio_section") if col_ratio else False
+    show_cost_section = st.sidebar.checkbox(
+        "Показати блок «Вартість Значення/ЕЕ_кВт»",
+        value=True,
+        key="show_cost_section",
+        help="Показується тільки для статей Електроенергія та Водопостачання."
+    ) if col_kwh else False
     show_ratio_heatmap = st.sidebar.checkbox("Показати Heatmap % в ТО", value=True,
                                               key="show_ratio_heatmap") if col_ratio else False
+
+    # Перемикач метрики для перших основних таблиць/графіків.
+    if col_kwh and col_kwh in df.columns:
+        main_metric_choice = st.sidebar.radio(
+            "Метрика для основних таблиць",
+            options=["Значення", "ЕЕ_кВт"],
+            index=0,
+            horizontal=True,
+            key="main_metric_choice",
+            help="Перемикає перші основні таблиці та всі повʼязані абсолютні розрахунки."
+        )
+        col_main_value = col_kwh if main_metric_choice == "ЕЕ_кВт" else col_value
+    else:
+        main_metric_choice = "Значення"
+        col_main_value = col_value
 
     # Одноразова підготовка важких колонок після вибору мапінгу.
     # Далі всі функції бачать готову _m і не перераховують місяці десятки разів.
     df = _prep(df, col_month)
-    df[col_value] = pd.to_numeric(df[col_value], errors="coerce")
-    if col_ratio and col_ratio in df.columns:
-        df[col_ratio] = pd.to_numeric(df[col_ratio], errors="coerce")
+    _ensure_numeric_inplace(df, [col_value, col_kwh, col_ratio])
 
     # ── apply_filters: df залишається ПОВНИМ (для норм), df_filtered — для відображення ──
     def apply_filters(d):
@@ -2975,17 +3427,18 @@ def main():
                 )
 
                 tdf = build_article_monthly(
-                    df, df_filtered, col_tt, col_article, col_month, col_value,
+                    df, df_filtered, col_tt, col_article, col_month, col_main_value,
                     col_plf, article, tt_val, group_factors
                 )
                 render_article_block(
                     title=article, table_df=tdf,
                     df=df, df_filtered=df_filtered,
                     col_tt=col_tt, col_article=col_article,
-                    col_month=col_month, col_value=col_value, col_plf=col_plf,
+                    col_month=col_month, col_value=col_main_value, col_plf=col_plf,
                     group_factors=group_factors, tt_val=tt_val, article_idx=art_idx,
                     active_tt=shared_active_tt,
                     col_division=col_division,
+                    metric_label=main_metric_choice,
                 )
 
                 if col_ratio and show_ratio_section:
@@ -3004,6 +3457,23 @@ def main():
                         col_division=col_division,
                     )
 
+                if show_cost_section and col_kwh and _is_utility_cost_article(article):
+                    cost_df = build_cost_monthly(
+                        df_filtered, col_tt, col_article, col_month,
+                        col_value, col_kwh, col_plf, article, tt_val
+                    )
+                    st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
+                    render_cost_article_block(
+                        title=article, table_df=cost_df,
+                        df_filtered=df_filtered,
+                        col_tt=col_tt, col_article=col_article,
+                        col_month=col_month, col_value=col_value,
+                        col_kwh=col_kwh, col_plf=col_plf,
+                        tt_val=tt_val, article_idx=art_idx,
+                        active_tt=shared_active_tt,
+                        col_division=col_division,
+                    )
+
 
     if active_tab == "🧩 Комбінації факторів":
             # ── Combined factor impact analysis ───────────────────────────────
@@ -3013,7 +3483,7 @@ def main():
                 col_tt=col_tt,
                 col_article=col_article,
                 col_month=col_month,
-                col_value=col_value,
+                col_value=col_main_value,
                 col_ratio=col_ratio,
                 col_plf=col_plf,
                 articles_to_show=articles_to_show,
@@ -3031,7 +3501,7 @@ def main():
             rows_pivot = []
             for article in articles_to_show:
                 tdf = build_article_monthly(df, df_filtered, col_tt, col_article,
-                                            col_month, col_value, col_plf, article, tt_val, group_factors)
+                                            col_month, col_main_value, col_plf, article, tt_val, group_factors)
                 row = {"Стаття": article}
                 for m in range(1, 13):
                     row[MONTH_LABELS[m]] = tdf.loc[m, metric_col]
@@ -3088,7 +3558,7 @@ def main():
             show_months     = st.checkbox("Розгорнути по місяцях", value=False, key="tt_show_months")
 
             df_tt_agg = build_tt_pivot(
-                df_filtered, col_tt, col_article, col_month, col_value, col_plf, articles_to_show
+                df_filtered, col_tt, col_article, col_month, col_main_value, col_plf, articles_to_show
             )
 
             if df_tt_agg.empty:
@@ -3184,7 +3654,7 @@ def main():
 
             if group_factors:
                 heat, tt_table, val_col = build_heat_data(
-                    df, df_filtered, col_tt, col_article, col_month, col_value,
+                    df, df_filtered, col_tt, col_article, col_month, col_main_value,
                     col_plf, group_factors, articles_to_show, mode
                 )
                 heat_display = _replace_tt_index_with_division(heat, df_filtered, col_tt, col_division)
@@ -3243,7 +3713,7 @@ def main():
             render_statistical_analysis_tab(
                 df=df,
                 col_article=col_article,
-                col_value=col_value,
+                col_value=col_main_value,
                 col_plf=col_plf,
                 articles_to_show=articles_to_show,
                 group_factors=group_factors,
@@ -3259,7 +3729,7 @@ def main():
             rows_pivot = []
             for article in articles_to_show:
                 tdf = build_article_monthly(
-                    df, df_filtered, col_tt, col_article, col_month, col_value,
+                    df, df_filtered, col_tt, col_article, col_month, col_main_value,
                     col_plf, article, tt_val, group_factors
                 )
                 row = {"Стаття": article}
@@ -3269,7 +3739,7 @@ def main():
                 rows_pivot.append(row)
             pivot_df = pd.DataFrame(rows_pivot).set_index("Стаття") if rows_pivot else pd.DataFrame()
             df_tt_agg = build_tt_pivot(
-                df_filtered, col_tt, col_article, col_month, col_value, col_plf, articles_to_show
+                df_filtered, col_tt, col_article, col_month, col_main_value, col_plf, articles_to_show
             )
 
             export_sections = [
@@ -3303,17 +3773,61 @@ def main():
             for s in export_sections:
                 st.markdown(f"- {s}")
 
-            st.download_button(
-                label="⬇️ Скачати дашборд як Excel",
-                data=export_excel(
-                    df, df_filtered, col_tt, col_article, col_month, col_value,
-                    col_plf, articles_to_show, tt_val, group_factors, metric_col,
-                    mode, pivot_df, df_tt_agg=df_tt_agg, col_ratio=col_ratio,
-                    col_division=col_division, ratio_mode=ratio_mode,
-                ),
-                file_name="simi_dashboard.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            # ── Експорт Excel: кнопка показується одразу, файл формується тільки по кліку ──
+            export_signature = repr({
+                "rows": int(len(df_filtered)),
+                "cols": tuple(map(str, df_filtered.columns)),
+                "articles": tuple(map(str, articles_to_show or [])),
+                "tt": tuple(map(str, tt_val or [])),
+                "group_factors": tuple(map(str, group_factors or [])),
+                "metric_col": str(metric_col),
+                "mode": str(mode),
+                "ratio_mode": str(ratio_mode),
+                "has_ratio": bool(col_ratio),
+                "has_tt_agg": bool(df_tt_agg is not None and not df_tt_agg.empty),
+            })
+
+            if st.session_state.get("simi_export_signature") != export_signature:
+                st.session_state["simi_export_signature"] = export_signature
+                st.session_state["simi_export_excel_bytes"] = None
+
+            export_col1, export_col2 = st.columns([1, 1])
+
+            with export_col1:
+                prepare_export = st.button(
+                    "📦 Підготувати Excel-файл",
+                    key="prepare_simi_dashboard_excel",
+                    use_container_width=True,
+                )
+
+            if prepare_export:
+                with st.spinner("⏳ Формую Excel-файл..."):
+                    st.session_state["simi_export_excel_bytes"] = export_excel(
+                        df, df_filtered, col_tt, col_article, col_month, col_main_value,
+                        col_plf, articles_to_show, tt_val, group_factors, metric_col,
+                        mode, pivot_df, df_tt_agg=df_tt_agg, col_ratio=col_ratio,
+                        col_division=col_division, ratio_mode=ratio_mode,
+                    )
+                st.success("✅ Excel-файл готовий. Натисни кнопку завантаження.")
+
+            with export_col2:
+                if st.session_state.get("simi_export_excel_bytes") is not None:
+                    st.download_button(
+                        label="⬇️ Скачати дашборд як Excel",
+                        data=st.session_state["simi_export_excel_bytes"],
+                        file_name="simi_dashboard.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_simi_dashboard_excel",
+                        use_container_width=True,
+                    )
+                else:
+                    st.button(
+                        "⬇️ Скачати дашборд як Excel",
+                        key="download_simi_dashboard_excel_disabled",
+                        disabled=True,
+                        use_container_width=True,
+                        help="Спочатку натисни «Підготувати Excel-файл»."
+                    )
 
 
 if __name__ == "__main__":
