@@ -27,6 +27,72 @@ MONTH_LABELS = {
 }
 MONTHS_LIST = [MONTH_LABELS[m] for m in range(1, 13)]
 
+UA_MONTH_NAMES = {
+    1: "січень", 2: "лютий", 3: "березень", 4: "квітень",
+    5: "травень", 6: "червень", 7: "липень", 8: "серпень",
+    9: "вересень", 10: "жовтень", 11: "листопад", 12: "грудень",
+}
+
+def _single_value_or_none(values):
+    vals = []
+    try:
+        for v in values:
+            if pd.notna(v):
+                vals.append(v)
+    except Exception:
+        return None
+    uniq = pd.Series(vals).dropna().unique().tolist() if vals else []
+    return uniq[0] if len(uniq) == 1 else None
+
+def _format_ua_month_year(month_value=None, year_value=None):
+    m_num = None
+    if month_value is not None and pd.notna(month_value):
+        try:
+            m_num = int(get_month_num(pd.Series([month_value])).iloc[0])
+        except Exception:
+            m_num = None
+    m_txt = UA_MONTH_NAMES.get(m_num, str(month_value).strip() if month_value is not None and pd.notna(month_value) else "")
+
+    y_txt = ""
+    if year_value is not None and pd.notna(year_value):
+        try:
+            y_float = float(year_value)
+            y_txt = str(int(y_float)) if y_float.is_integer() else str(year_value)
+        except Exception:
+            y_txt = str(year_value).strip()
+
+    return " ".join([x for x in [m_txt, y_txt] if x]).strip()
+
+def _build_article_period_title(article=None, articles=None, df_context=None, col_article=None, col_month=None, col_year=None, suffix=None):
+    """Формує заголовок: Стаття "Водопостачання" за січень 2026."""
+    article_val = article
+    if article_val is None and articles is not None:
+        article_val = _single_value_or_none(articles)
+    if article_val is None and df_context is not None and col_article and col_article in df_context.columns:
+        article_val = _single_value_or_none(df_context[col_article].dropna().unique())
+
+    if article_val is None:
+        base = "Стаття всі статті"
+    else:
+        base = f'Стаття "{article_val}"'
+
+    month_val = None
+    year_val = None
+    if df_context is not None and not df_context.empty:
+        if col_month and col_month in df_context.columns:
+            month_val = _single_value_or_none(df_context[col_month].dropna().unique())
+        if col_year and col_year in df_context.columns:
+            year_val = _single_value_or_none(df_context[col_year].dropna().unique())
+
+    period = _format_ua_month_year(month_val, year_val)
+    if period:
+        base = f"{base} за {period}"
+
+    if suffix:
+        base = f"{base} · {suffix}"
+    return base
+
+
 PURPLE    = "#5b2d8e"
 GREY      = "#c0c0c0"
 RED_LINE  = "#c0392b"
@@ -1590,16 +1656,34 @@ def render_statistical_analysis_tab(df, col_article, col_value, col_plf,
 def _clean_heat_group_factors(group_factors, col_month, cols=None):
     """
     Для Heatmap колонка місяця не має йти як окремий текстовий фактор.
-    Місяць завжди використовується через канонічний числовий ключ _m.
-    Це дозволяє підключати "Місяць" у факторах без поломки Average/Average %.
+    Якщо у факторах вибрано "Місяць", додаємо канонічний числовий ключ _m.
+
+    Важливо:
+    - _m використовується саме як фактор для Average / Average %;
+    - текстова колонка місяця не дублюється в groupby;
+    - фактичні значення все одно групуються по _m для побудови колонок heatmap.
     """
     clean = []
+    use_month_factor = False
+
     for f in (group_factors or []):
-        if not f or f in (col_month, "_m"):
+        if not f:
             continue
+
+        # Якщо користувач вибрав колонку "Місяць" або вже передано _m,
+        # використовуємо _m як фактор у розрахунку нормативу.
+        if f == col_month or f == "_m":
+            use_month_factor = True
+            continue
+
         if cols is not None and f not in cols:
             continue
+
         clean.append(f)
+
+    if use_month_factor:
+        clean.append("_m")
+
     return list(dict.fromkeys(clean))
 
 
@@ -1609,10 +1693,10 @@ def build_heat_data(df, df_filtered, col_tt, col_article, col_month, col_value,
     Heatmap для абсолютних значень.
 
     FIX:
-    - якщо у факторах вибрано "Місяць", він не додається в groupby як текстова колонка;
-    - місячність завжди рахується через _m;
-    - Average_Calc / Std рахуються з повного df у розрізі факторів + статті + _m;
-    - merge також іде через _m, тому Average змінюється по місяцях коректно.
+    - якщо у факторах вибрано "Місяць", Average_Calc / Std рахуються в розрізі _m;
+    - якщо "Місяць" НЕ вибрано, Average_Calc рахується як загальний норматив за вибраними факторами;
+    - _m завжди лишається в tt_table для побудови місячних колонок heatmap;
+    - не дублюємо _m у groupby та merge.
     """
     df_num = df.copy()
     df_num[col_value] = pd.to_numeric(df_num[col_value], errors="coerce")
@@ -1627,7 +1711,9 @@ def build_heat_data(df, df_filtered, col_tt, col_article, col_month, col_value,
     all_fact = _fact_rows(df_num, col_plf)
     all_fact = all_fact[all_fact[col_article].isin(articles_to_show)]
 
-    avg_grp_cols = list(dict.fromkeys(heat_group_factors + [col_article, "_m"]))
+    # Якщо користувач вибрав Місяць як фактор — heat_group_factors містить _m.
+    # Якщо не вибрав — _m тут немає, отже Average буде без місячного фактору.
+    avg_grp_cols = list(dict.fromkeys(heat_group_factors + [col_article]))
 
     global_avg_std = (
         all_fact
@@ -1642,6 +1728,8 @@ def build_heat_data(df, df_filtered, col_tt, col_article, col_month, col_value,
     data_heat = _fact_rows(filt, col_plf)
     data_heat = data_heat[data_heat[col_article].isin(articles_to_show)]
 
+    # _m тут потрібен завжди, бо heatmap має колонки по місяцях.
+    # Якщо _m уже є в heat_group_factors, dict.fromkeys прибере дубль.
     tt_grp = list(dict.fromkeys([col_tt] + heat_group_factors + ["_m", col_article]))
 
     tt_table = (
@@ -1651,7 +1739,7 @@ def build_heat_data(df, df_filtered, col_tt, col_article, col_month, col_value,
         .rename(columns={col_value: "Fact"})
     )
 
-    merge_cols = list(dict.fromkeys(heat_group_factors + [col_article, "_m"]))
+    merge_cols = list(dict.fromkeys(heat_group_factors + [col_article]))
 
     tt_table = pd.merge(
         tt_table,
@@ -1704,9 +1792,10 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
     Heatmap для % в ТО.
 
     FIX:
-    - фактор "Місяць" можна вибрати у факторах групування;
-    - для розрахунку Average % він не дублюється як текстова колонка;
-    - розрахунок Average % іде через _m, тому значення коректно змінюється по місяцях.
+    - якщо у факторах вибрано "Місяць", Average % / Std рахуються в розрізі _m;
+    - якщо "Місяць" НЕ вибрано, Average % рахується як загальний норматив за вибраними факторами;
+    - _m завжди лишається в tt_table для побудови місячних колонок heatmap;
+    - не дублюємо _m у groupby та merge.
     """
     if group_factors is None:
         group_factors = []
@@ -1736,7 +1825,9 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
     avg_src = (_fact_rows(df_all_num, col_plf) if has_plf else df_all_num)
     avg_src = avg_src[avg_src[col_article].isin(articles_to_show)]
 
-    grp_cols = list(dict.fromkeys(ratio_group_factors + [col_article, "_m"]))
+    # Якщо користувач вибрав Місяць як фактор — ratio_group_factors містить _m.
+    # Якщо не вибрав — _m тут немає, отже Average % буде без місячного фактору.
+    grp_cols = list(dict.fromkeys(ratio_group_factors + [col_article]))
 
     global_avg = (
         avg_src
@@ -1744,7 +1835,9 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
         .agg(Average_Calc="mean", Std="std")
     )
 
-    tt_grp = list(dict.fromkeys([col_tt] + ratio_group_factors + [col_article, "_m"]))
+    # _m тут потрібен завжди, бо heatmap має колонки по місяцях.
+    # Якщо _m уже є в ratio_group_factors, dict.fromkeys прибере дубль.
+    tt_grp = list(dict.fromkeys([col_tt] + ratio_group_factors + ["_m", col_article]))
 
     tt_table = (
         data_heat
@@ -1795,7 +1888,6 @@ def build_ratio_heat_data(df, df_filtered, col_tt, col_article, col_month,
     heat["РАЗОМ"] = heat.mean(axis=1, numeric_only=True)
 
     return heat, tt_table, val_col
-
 
 
 def _fill_heat_cols(heat):
@@ -1964,6 +2056,431 @@ def _add_division_display_column(df_in, df_src, col_tt, col_division=None, displ
         out[display_col] = out[col_tt].map(lambda v: _tt_display_label(v, tt_display_map))
     return out
 
+
+
+
+# ── Heatmap TOP/ANTITOP rating + Excel helpers ───────────────────────────────
+def _get_heatmap_rating_factor_options(df_src, col_tt=None, col_division=None, group_factors=None):
+    """
+    Повертає список колонок, за якими можна дивитися рейтинг у Heatmap TOP/ANTITOP.
+    Додає стандартні бізнес-розрізи + усі фактори групування, які реально є в df.
+    """
+    if df_src is None or df_src.empty:
+        return []
+
+    cols = df_src.columns.tolist()
+    options = []
+
+    def add_col(c):
+        if c and c in cols and c not in options:
+            options.append(c)
+
+    add_col(col_division)
+    add_col(col_tt)
+
+    candidates = [
+        _find_col_by_keywords(cols, exact=["Область", "Області", "Region", "Регіон", "Регион"], contains=["област", "регіон", "регион", "region"]),
+        _find_col_by_keywords(cols, exact=["Місто", "Город", "City"], contains=["місто", "город", "city"]),
+        _find_col_by_keywords(cols, exact=["Формат ТО", "Формат"], contains=["формат то", "формат", "format"]),
+        _find_col_by_keywords(cols, exact=["Формат2", "Формат 2", "Format2", "Format 2"], contains=["формат2", "формат 2", "format2", "format 2"]),
+        _find_col_by_keywords(cols, exact=["Мегасегмент"], contains=["мегасегмент", "mega"]),
+        _find_col_by_keywords(cols, exact=["Площа", "Площадь", "Area"], contains=["площа", "площад", "area"]),
+        _find_col_by_keywords(cols, exact=["Рік відкриття", "Год открытия", "Year opened"], contains=["рік відкрит", "год открыт", "year open"]),
+    ]
+    for c in candidates:
+        add_col(c)
+
+    for c in (group_factors or []):
+        add_col(c)
+
+    return options
+
+def _prepare_heatmap_rating_table(tt_table, df_src, col_tt, val_col, rating_col, aggfunc="sum"):
+    """
+    Формує TOP/ANTITOP не тільки по ТТ, а по вибраному фактору:
+    область, місто, Формат ТО, Формат 2, Мегасегмент або будь-який group_factor.
+    Розрахунок tt_table не змінюється — тільки групування рейтингу.
+    """
+    if tt_table is None or tt_table.empty or not rating_col or val_col not in tt_table.columns:
+        return pd.DataFrame(columns=["Підрозділ", val_col])
+
+    work = tt_table.copy()
+    work[val_col] = pd.to_numeric(work[val_col], errors="coerce")
+
+    if rating_col not in work.columns:
+        if df_src is not None and rating_col in df_src.columns and col_tt in df_src.columns and col_tt in work.columns:
+            rating_map = (
+                df_src[[col_tt, rating_col]]
+                .dropna(subset=[col_tt])
+                .drop_duplicates(subset=[col_tt], keep="first")
+            )
+            work = work.merge(rating_map, on=col_tt, how="left")
+        elif rating_col == col_tt and col_tt in work.columns:
+            work[rating_col] = work[col_tt]
+
+    if rating_col not in work.columns:
+        return pd.DataFrame(columns=["Підрозділ", val_col])
+
+    work[rating_col] = work[rating_col].where(work[rating_col].notna(), "Без значення").astype(str).str.strip()
+    work.loc[work[rating_col].eq("") | work[rating_col].str.lower().eq("nan"), rating_col] = "Без значення"
+
+    if aggfunc == "mean":
+        rating = work.groupby(rating_col, as_index=False, observed=True)[val_col].mean()
+    else:
+        rating = work.groupby(rating_col, as_index=False, observed=True)[val_col].sum()
+
+    rating = rating.rename(columns={rating_col: "Підрозділ"})
+    rating[val_col] = pd.to_numeric(rating[val_col], errors="coerce").fillna(0)
+    return rating
+
+def _safe_xlsx_filename(name, prefix="block"):
+    """Безпечна назва Excel-файлу для окремого блоку."""
+    s = str(name) if name is not None else prefix
+    for ch in ['\\', '/', '*', '?', ':', '[', ']', '"', "'", '<', '>', '|']:
+        s = s.replace(ch, '_')
+    s = s.strip().replace(' ', '_')
+    return (s[:90] or prefix) + ".xlsx"
+
+def _heatmap_block_to_excel_bytes(title, heat_df, top_df=None, antitop_df=None,
+                                  val_col=None, header_color="5B2D8E", percent=False):
+    """
+    Експорт одного Heatmap-блоку в Excel зі збереженням форматування:
+    - окремий лист Heatmap з кольоровою шкалою;
+    - окремий лист TOP_ANTITOP, якщо передані top_df / antitop_df;
+    - числовий або %-формат залежно від percent.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.formatting.rule import ColorScaleRule
+
+    def norm_hex(x, default="5B2D8E"):
+        x = str(x or default).replace("#", "").strip().upper()
+        return x if len(x) == 6 else default
+
+    def safe_sheet_name(name):
+        s = str(name or "Sheet")
+        for ch in ['\\', '/', '*', '?', ':', '[', ']']:
+            s = s.replace(ch, '_')
+        return s[:31] or "Sheet"
+
+    header_hex = norm_hex(header_color)
+    thin = Side(style="thin", color="B7B7B7")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    num_fmt = '0.00"%"' if percent else '# ##0;-# ##0;-'
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Heatmap"
+
+    out = heat_df.copy() if heat_df is not None else pd.DataFrame()
+    out = out.replace([np.inf, -np.inf], np.nan)
+    if out.index.name is None:
+        out.index.name = "Підрозділ"
+    out = out.reset_index()
+
+    max_col = max(1, len(out.columns))
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+    title_cell = ws.cell(row=1, column=1, value=str(title))
+    title_cell.font = Font(bold=True, color="FFFFFF", size=12)
+    title_cell.fill = PatternFill("solid", start_color=header_hex, end_color=header_hex)
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 24
+
+    for ci, h in enumerate(out.columns, 1):
+        cell = ws.cell(row=2, column=ci, value=str(h))
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", start_color=header_hex, end_color=header_hex)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    for ri, row in enumerate(out.itertuples(index=False), 3):
+        for ci, v in enumerate(row, 1):
+            value = None if pd.isna(v) else v
+            if isinstance(value, (np.integer,)):
+                value = int(value)
+            elif isinstance(value, (np.floating,)):
+                value = float(value)
+            cell = ws.cell(row=ri, column=ci, value=value)
+            cell.border = border
+            cell.alignment = Alignment(horizontal="right" if ci > 1 else "left", vertical="center")
+            if ci > 1 and isinstance(value, (int, float)):
+                cell.number_format = num_fmt
+                if float(value) < 0:
+                    cell.font = Font(color="C0392B")
+
+    # Кольорова шкала як у heatmap: зелений → жовтий → червоний.
+    if len(out) > 0 and len(out.columns) > 1:
+        start_cell = ws.cell(row=3, column=2).coordinate
+        end_cell = ws.cell(row=2 + len(out), column=len(out.columns)).coordinate
+        ws.conditional_formatting.add(
+            f"{start_cell}:{end_cell}",
+            ColorScaleRule(
+                start_type="min", start_color="63BE7B",
+                mid_type="percentile", mid_value=50, mid_color="FFEB84",
+                end_type="max", end_color="F8696B",
+            )
+        )
+
+    ws.freeze_panes = "B3"
+    for ci, col in enumerate(out.columns, 1):
+        vals = out.iloc[:100, ci - 1].fillna("").astype(str).tolist() if not out.empty else []
+        max_len = max([len(str(col))] + [len(x) for x in vals])
+        ws.column_dimensions[get_column_letter(ci)].width = min(max(max_len + 2, 12), 42)
+
+    if top_df is not None or antitop_df is not None:
+        ws2 = wb.create_sheet("TOP_ANTITOP")
+        ws2.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+        c = ws2.cell(row=1, column=1, value=f"TOP / ANTITOP — {title}")
+        c.font = Font(bold=True, color="FFFFFF", size=12)
+        c.fill = PatternFill("solid", start_color=header_hex, end_color=header_hex)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+        def write_section(start_row, section_title, data, fill_hex):
+            ws2.cell(row=start_row, column=1, value=section_title).font = Font(bold=True, color="FFFFFF")
+            ws2.cell(row=start_row, column=1).fill = PatternFill("solid", start_color=fill_hex, end_color=fill_hex)
+            ws2.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=2)
+            if data is None or data.empty:
+                return start_row + 2
+            use = data.copy()
+            if val_col and val_col in use.columns:
+                cols = [c for c in ["Підрозділ", val_col] if c in use.columns]
+                use = use[cols]
+            for ci, h in enumerate(use.columns, 1):
+                cell = ws2.cell(row=start_row + 1, column=ci, value=str(h))
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill("solid", start_color=header_hex, end_color=header_hex)
+                cell.alignment = Alignment(horizontal="center")
+                cell.border = border
+            for r_i, row in enumerate(use.itertuples(index=False), start_row + 2):
+                for c_i, v in enumerate(row, 1):
+                    value = None if pd.isna(v) else v
+                    if isinstance(value, (np.integer,)):
+                        value = int(value)
+                    elif isinstance(value, (np.floating,)):
+                        value = float(value)
+                    cell = ws2.cell(row=r_i, column=c_i, value=value)
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal="right" if c_i > 1 else "left")
+                    if c_i > 1 and isinstance(value, (int, float)):
+                        cell.number_format = num_fmt
+                        if float(value) < 0:
+                            cell.font = Font(color="C0392B")
+            return start_row + len(use) + 4
+
+        next_row = write_section(3, "✅ TOP", top_df, "2E7D32")
+        final_row = write_section(next_row, "❌ ANTITOP", antitop_df, "C0392B")
+        # Градієнтна заливка для значень TOP/ANTITOP.
+        if final_row > 5:
+            ws2.conditional_formatting.add(
+                f"B5:B{max(5, final_row - 1)}",
+                ColorScaleRule(
+                    start_type="min", start_color="63BE7B",
+                    mid_type="percentile", mid_value=50, mid_color="FFEB84",
+                    end_type="max", end_color="F8696B",
+                )
+            )
+        ws2.column_dimensions["A"].width = 34
+        ws2.column_dimensions["B"].width = 16
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+def _heatmap_blocks_to_excel_bytes(blocks, workbook_title="Всі Heatmap-блоки"):
+    """
+    Єдиний Excel-файл для всіх Heatmap-блоків.
+    Кожен блок записується на окремі листи:
+    - Heatmap / Heatmap_%ТО
+    - TOP_ANTITOP / TOP_%ТО
+
+    Логіка градієнта як на екрані:
+    мінімум = зелений, середина = жовтий, максимум = червоний.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.formatting.rule import ColorScaleRule
+
+    def norm_hex(x, default="5B2D8E"):
+        x = str(x or default).replace("#", "").strip().upper()
+        return x if len(x) == 6 else default
+
+    def safe_sheet_name(name, used=None):
+        used = used if used is not None else set()
+        s = str(name or "Sheet")
+        for ch in ['\\', '/', '*', '?', ':', '[', ']']:
+            s = s.replace(ch, '_')
+        s = s[:31] or "Sheet"
+        base = s
+        i = 1
+        while s in used:
+            suffix = f"_{i}"
+            s = (base[:31 - len(suffix)] + suffix)[:31]
+            i += 1
+        used.add(s)
+        return s
+
+    thin = Side(style="thin", color="B7B7B7")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    used_sheets = set()
+
+    wb = Workbook()
+    ws0 = wb.active
+    ws0.title = safe_sheet_name("Зміст", used_sheets)
+    ws0.cell(row=1, column=1, value=workbook_title).font = Font(bold=True, size=14)
+    ws0.cell(row=3, column=1, value="Блок").font = Font(bold=True)
+    ws0.cell(row=3, column=2, value="Лист Heatmap").font = Font(bold=True)
+    ws0.cell(row=3, column=3, value="Лист TOP/ANTITOP").font = Font(bold=True)
+
+    def write_df(ws, title, data, header_color="5B2D8E", percent=False, apply_gradient=True):
+        header_hex = norm_hex(header_color)
+        num_fmt = '0.00"%"' if percent else '# ##0;-# ##0;-'
+        out = data.copy() if data is not None else pd.DataFrame()
+        out = out.replace([np.inf, -np.inf], np.nan)
+        if out.index.name is None:
+            out.index.name = "Підрозділ"
+        out = out.reset_index()
+
+        max_col = max(1, len(out.columns))
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+        c = ws.cell(row=1, column=1, value=str(title))
+        c.font = Font(bold=True, color="FFFFFF", size=12)
+        c.fill = PatternFill("solid", start_color=header_hex, end_color=header_hex)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 24
+
+        for ci, h in enumerate(out.columns, 1):
+            cell = ws.cell(row=2, column=ci, value=str(h))
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", start_color=header_hex, end_color=header_hex)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+
+        for ri, row in enumerate(out.itertuples(index=False), 3):
+            for ci, v in enumerate(row, 1):
+                value = None if pd.isna(v) else v
+                if isinstance(value, (np.integer,)):
+                    value = int(value)
+                elif isinstance(value, (np.floating,)):
+                    value = float(value)
+                cell = ws.cell(row=ri, column=ci, value=value)
+                cell.border = border
+                cell.alignment = Alignment(horizontal="right" if ci > 1 else "left", vertical="center")
+                if ci > 1 and isinstance(value, (int, float)):
+                    cell.number_format = num_fmt
+                    if float(value) < 0:
+                        cell.font = Font(color="C0392B")
+
+        if apply_gradient and len(out) > 0 and len(out.columns) > 1:
+            start_cell = ws.cell(row=3, column=2).coordinate
+            end_cell = ws.cell(row=2 + len(out), column=len(out.columns)).coordinate
+            ws.conditional_formatting.add(
+                f"{start_cell}:{end_cell}",
+                ColorScaleRule(
+                    start_type="min", start_color="63BE7B",
+                    mid_type="percentile", mid_value=50, mid_color="FFEB84",
+                    end_type="max", end_color="F8696B",
+                )
+            )
+
+        ws.freeze_panes = "B3"
+        for ci, col in enumerate(out.columns, 1):
+            vals = out.iloc[:100, ci - 1].fillna("").astype(str).tolist() if not out.empty else []
+            max_len = max([len(str(col))] + [len(x) for x in vals])
+            ws.column_dimensions[get_column_letter(ci)].width = min(max(max_len + 2, 12), 42)
+        return out
+
+    def write_top_antitop(ws, title, top_df, antitop_df, val_col=None, header_color="5B2D8E", percent=False):
+        header_hex = norm_hex(header_color)
+        num_fmt = '0.00"%"' if percent else '# ##0;-# ##0;-'
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+        c = ws.cell(row=1, column=1, value=f"TOP / ANTITOP — {title}")
+        c.font = Font(bold=True, color="FFFFFF", size=12)
+        c.fill = PatternFill("solid", start_color=header_hex, end_color=header_hex)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+        def write_section(start_row, section_title, data, fill_hex):
+            ws.cell(row=start_row, column=1, value=section_title).font = Font(bold=True, color="FFFFFF")
+            ws.cell(row=start_row, column=1).fill = PatternFill("solid", start_color=fill_hex, end_color=fill_hex)
+            ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=2)
+            if data is None or data.empty:
+                return start_row + 2
+            use = data.copy()
+            if val_col and val_col in use.columns:
+                cols = [c for c in ["Підрозділ", val_col] if c in use.columns]
+                use = use[cols]
+            for ci, h in enumerate(use.columns, 1):
+                cell = ws.cell(row=start_row + 1, column=ci, value=str(h))
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill("solid", start_color=header_hex, end_color=header_hex)
+                cell.alignment = Alignment(horizontal="center")
+                cell.border = border
+            for r_i, row in enumerate(use.itertuples(index=False), start_row + 2):
+                for c_i, v in enumerate(row, 1):
+                    value = None if pd.isna(v) else v
+                    if isinstance(value, (np.integer,)):
+                        value = int(value)
+                    elif isinstance(value, (np.floating,)):
+                        value = float(value)
+                    cell = ws.cell(row=r_i, column=c_i, value=value)
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal="right" if c_i > 1 else "left")
+                    if c_i > 1 and isinstance(value, (int, float)):
+                        cell.number_format = num_fmt
+                        if float(value) < 0:
+                            cell.font = Font(color="C0392B")
+            return start_row + len(use) + 4
+
+        next_row = write_section(3, "✅ TOP", top_df, "2E7D32")
+        final_row = write_section(next_row, "❌ ANTITOP", antitop_df, "C0392B")
+        if final_row > 5:
+            ws.conditional_formatting.add(
+                f"B5:B{max(5, final_row - 1)}",
+                ColorScaleRule(
+                    start_type="min", start_color="63BE7B",
+                    mid_type="percentile", mid_value=50, mid_color="FFEB84",
+                    end_type="max", end_color="F8696B",
+                )
+            )
+        ws.column_dimensions["A"].width = 34
+        ws.column_dimensions["B"].width = 16
+
+    row_idx = 4
+    for i, block in enumerate(blocks or [], 1):
+        if not block:
+            continue
+        title = block.get("title", f"Heatmap {i}")
+        prefix = block.get("sheet_prefix", f"Heatmap_{i}")
+        header_color = block.get("header_color", "5B2D8E")
+        percent = bool(block.get("percent", False))
+        val_col = block.get("val_col")
+
+        heat_sheet = safe_sheet_name(prefix, used_sheets)
+        ws = wb.create_sheet(heat_sheet)
+        write_df(ws, title, block.get("heat_df"), header_color=header_color, percent=percent, apply_gradient=True)
+
+        top_sheet = ""
+        if block.get("top_df") is not None or block.get("antitop_df") is not None:
+            top_sheet = safe_sheet_name(f"TOP_{prefix}", used_sheets)
+            ws2 = wb.create_sheet(top_sheet)
+            write_top_antitop(
+                ws2, title, block.get("top_df"), block.get("antitop_df"),
+                val_col=val_col, header_color=header_color, percent=percent
+            )
+
+        ws0.cell(row=row_idx, column=1, value=str(title))
+        ws0.cell(row=row_idx, column=2, value=heat_sheet)
+        ws0.cell(row=row_idx, column=3, value=top_sheet)
+        row_idx += 1
+
+    ws0.column_dimensions["A"].width = 70
+    ws0.column_dimensions["B"].width = 24
+    ws0.column_dimensions["C"].width = 24
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
 
 def _fmt_abs_html(v):
     if pd.isna(v):
@@ -2617,7 +3134,8 @@ def render_ratio_article_block(title, table_df, df, df_filtered,
 def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
                                   col_month, col_ratio, col_plf,
                                   articles_to_show, ratio_mode, group_factors=None,
-                                  col_division=None):
+                                  col_division=None, col_year=None,
+                                  show_download_button=True):
     if group_factors is None:
         group_factors = []
 
@@ -2639,6 +3157,10 @@ def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
     </div>""", unsafe_allow_html=True)
 
     heat_display = _replace_tt_index_with_division(heat, df_filtered, col_tt, col_division)
+    ratio_heatmap_title = _build_article_period_title(
+        articles=articles_to_show, df_context=df_filtered, col_article=col_article,
+        col_month=col_month, col_year=col_year, suffix=f"Heatmap % в ТО — {ratio_mode}"
+    )
 
     st.dataframe(
         heat_display.style
@@ -2652,21 +3174,51 @@ def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
     <div style="margin:14px 0 6px 0;">
       <span style="background:{TEAL_HDR};color:white;font-weight:700;
                    padding:4px 14px;font-size:0.9rem;border-radius:2px;">
-        🏆 TOP / ANTITOP магазинів — % в ТО
+        🏆 TOP / ANTITOP — % в ТО
       </span>
     </div>""", unsafe_allow_html=True)
 
-    sum_val = tt_table.groupby(col_tt, observed=True)[val_col].mean().reset_index()
-    n_tt    = st.slider("Кількість магазинів (% в ТО)", 1, 100, 10, key="ratio_n_tt_slider")
-    top     = sum_val.sort_values(val_col, ascending=True).head(n_tt)
+    rating_options = _get_heatmap_rating_factor_options(
+        df_filtered,
+        col_tt=col_tt,
+        col_division=col_division,
+        group_factors=group_factors,
+    )
+    if not rating_options:
+        rating_options = [col_tt]
+
+    rc1, rc2 = st.columns([2, 1])
+    with rc1:
+        ratio_rating_col = st.selectbox(
+            "Рейтинг % в ТО дивимось по:",
+            options=rating_options,
+            index=0,
+            key=f"ratio_heatmap_rating_factor_{ratio_mode}",
+        )
+    with rc2:
+        n_tt = st.slider(
+            "Кількість позицій (% в ТО)",
+            1, 100, 10,
+            key=f"ratio_heatmap_rating_topn_{ratio_mode}",
+        )
+
+    sum_val = _prepare_heatmap_rating_table(
+        tt_table, df_filtered, col_tt, val_col, ratio_rating_col, aggfunc="mean"
+    )
+    top = sum_val.sort_values(val_col, ascending=True).head(n_tt)
     antitop = sum_val.sort_values(val_col, ascending=False).head(n_tt)
-    top_display = _add_division_display_column(top, df_filtered, col_tt, col_division)
-    antitop_display = _add_division_display_column(antitop, df_filtered, col_tt, col_division)
-    fmt_fn  = lambda v: f"{v:.2f}%" if pd.notna(v) else "-"
+    top_display = top.copy()
+    antitop_display = antitop.copy()
+    fmt_fn = lambda v: f"{v:.2f}%" if pd.notna(v) else "-"
+
+    ratio_top_title = _build_article_period_title(
+        articles=articles_to_show, df_context=df_filtered, col_article=col_article,
+        col_month=col_month, col_year=col_year, suffix=f"TOP / ANTITOP % в ТО — {ratio_rating_col}"
+    )
 
     ca, cb = st.columns(2)
     with ca:
-        st.write("✅ Top (найменший %)")
+        st.write(f"✅ Top (найменший %) по: {ratio_rating_col}")
         st.dataframe(
             top_display[["Підрозділ", val_col]].set_index("Підрозділ")
                 .style.background_gradient(cmap="RdYlGn", subset=[val_col])
@@ -2675,7 +3227,7 @@ def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
             use_container_width=True
         )
     with cb:
-        st.write("❌ Antitop (найбільший %)")
+        st.write(f"❌ Antitop (найбільший %) по: {ratio_rating_col}")
         st.dataframe(
             antitop_display[["Підрозділ", val_col]].set_index("Підрозділ")
                 .style.background_gradient(cmap="RdYlGn_r", subset=[val_col])
@@ -2684,9 +3236,39 @@ def render_ratio_heatmap_section(df, df_filtered, col_tt, col_article,
             use_container_width=True
         )
 
+    ratio_export_block = {
+        "title": ratio_heatmap_title,
+        "heat_df": heat_display,
+        "top_df": top_display,
+        "antitop_df": antitop_display,
+        "val_col": val_col,
+        "header_color": TEAL_HDR,
+        "percent": True,
+        "sheet_prefix": "Heatmap_%ТО",
+    }
 
-# ── Excel Export ──────────────────────────────────────────────────────────────
+    if show_download_button:
+        st.download_button(
+            "⬇️ Скачати Heatmap % в ТО в Excel",
+            data=_heatmap_block_to_excel_bytes(
+                title=ratio_heatmap_title,
+                heat_df=heat_display,
+                top_df=top_display,
+                antitop_df=antitop_display,
+                val_col=val_col,
+                header_color=TEAL_HDR,
+                percent=True,
+            ),
+            file_name=_safe_xlsx_filename(f"heatmap_ratio_{ratio_mode}"),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"download_ratio_heatmap_excel_{ratio_mode}_{val_col}",
+            use_container_width=True,
+        )
 
+    return ratio_export_block
+
+
+# ── Dynamic HTML export: 3 analytical tabs ───────────────────────────────────
 def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
                  col_plf, articles_to_show, tt_val, group_factors, metric_col,
                  mode, pivot_df=None, df_tt_agg=None, col_ratio=None,
@@ -2956,8 +3538,13 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
         heat_display = _replace_tt_index_with_division(heat, df_filtered, col_tt, col_division)
         write_df_sheet("Heatmap", heat_display, header_color="5b2d8e")
 
-        sum_val = tt_table.groupby(col_tt, observed=True)[val_col].sum().reset_index()
-        sum_val["Підрозділ"] = sum_val[col_tt].map(lambda v: display_label(v, tt_display_map))
+        rating_options = _get_heatmap_rating_factor_options(
+            df_filtered, col_tt=col_tt, col_division=col_division, group_factors=group_factors
+        ) or [col_tt]
+        heatmap_rating_col = rating_options[0]
+        sum_val = _prepare_heatmap_rating_table(
+            tt_table, df_filtered, col_tt, val_col, heatmap_rating_col, aggfunc="sum"
+        )
         top_df = sum_val.sort_values(val_col, ascending=True).head(50)[["Підрозділ", val_col]]
         anti_df = sum_val.sort_values(val_col, ascending=False).head(50)[["Підрозділ", val_col]]
         top_anti = pd.concat({"TOP_економія": top_df.reset_index(drop=True), "ANTITOP_переліміт": anti_df.reset_index(drop=True)}, axis=1)
@@ -2973,8 +3560,13 @@ def export_excel(df, df_filtered, col_tt, col_article, col_month, col_value,
             heat_r_display = _replace_tt_index_with_division(heat_r, df_filtered, col_tt, col_division)
             write_df_sheet("Heatmap_%_ТО", heat_r_display, header_color="085f63", number_format=PCT_VALUE_FMT)
 
-            sum_val_r = tt_table_r.groupby(col_tt, observed=True)[val_col_r].mean().reset_index()
-            sum_val_r["Підрозділ"] = sum_val_r[col_tt].map(lambda v: display_label(v, tt_display_map))
+            ratio_rating_options = _get_heatmap_rating_factor_options(
+                df_filtered, col_tt=col_tt, col_division=col_division, group_factors=group_factors
+            ) or [col_tt]
+            ratio_rating_col = ratio_rating_options[0]
+            sum_val_r = _prepare_heatmap_rating_table(
+                tt_table_r, df_filtered, col_tt, val_col_r, ratio_rating_col, aggfunc="mean"
+            )
             top_r = sum_val_r.sort_values(val_col_r, ascending=True).head(50)[["Підрозділ", val_col_r]]
             anti_r = sum_val_r.sort_values(val_col_r, ascending=False).head(50)[["Підрозділ", val_col_r]]
             top_anti_r = pd.concat({"TOP_%": top_r.reset_index(drop=True), "ANTITOP_%": anti_r.reset_index(drop=True)}, axis=1)
@@ -3651,6 +4243,7 @@ def main():
             # ── Heatmap ───────────────────────────────────────────────────────────────
             st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
             st.subheader("🌡️ Карта аномалій по магазинах")
+            heatmap_export_blocks = []
 
             if group_factors:
                 heat, tt_table, val_col = build_heat_data(
@@ -3658,6 +4251,10 @@ def main():
                     col_plf, group_factors, articles_to_show, mode
                 )
                 heat_display = _replace_tt_index_with_division(heat, df_filtered, col_tt, col_division)
+                heatmap_title = _build_article_period_title(
+                    articles=articles_to_show, df_context=df_filtered, col_article=col_article,
+                    col_month=col_month, col_year=col_year, suffix=f"Heatmap — {mode}"
+                )
 
                 st.dataframe(
                     heat_display.style
@@ -3668,17 +4265,48 @@ def main():
                 )
 
                 st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
-                st.subheader("🏆 TOP / ANTITOP магазинів")
-                sum_val = tt_table.groupby(col_tt, observed=True)[val_col].sum().reset_index()
-                n_tt    = st.slider("Кількість магазинів", 1, 100, 10)
-                top     = sum_val.sort_values(val_col, ascending=True).head(n_tt)
+                st.subheader("🏆 TOP / ANTITOP Heatmap")
+
+                rating_options = _get_heatmap_rating_factor_options(
+                    df_filtered,
+                    col_tt=col_tt,
+                    col_division=col_division,
+                    group_factors=group_factors,
+                )
+                if not rating_options:
+                    rating_options = [col_tt]
+
+                rc1, rc2 = st.columns([2, 1])
+                with rc1:
+                    heatmap_rating_col = st.selectbox(
+                        "Рейтинг дивимось по:",
+                        options=rating_options,
+                        index=0,
+                        key=f"heatmap_rating_factor_{mode}",
+                    )
+                with rc2:
+                    n_tt = st.slider(
+                        "Кількість позицій",
+                        1, 100, 10,
+                        key=f"heatmap_rating_topn_{mode}",
+                    )
+
+                sum_val = _prepare_heatmap_rating_table(
+                    tt_table, df_filtered, col_tt, val_col, heatmap_rating_col, aggfunc="sum"
+                )
+                top = sum_val.sort_values(val_col, ascending=True).head(n_tt)
                 antitop = sum_val.sort_values(val_col, ascending=False).head(n_tt)
-                top_display = _add_division_display_column(top, df_filtered, col_tt, col_division)
-                antitop_display = _add_division_display_column(antitop, df_filtered, col_tt, col_division)
+                top_display = top.copy()
+                antitop_display = antitop.copy()
                 fmt_abs = lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "-"
-                ca, cb  = st.columns(2)
+                heatmap_top_title = _build_article_period_title(
+                    articles=articles_to_show, df_context=df_filtered, col_article=col_article,
+                    col_month=col_month, col_year=col_year,
+                    suffix=f"TOP / ANTITOP Heatmap — {heatmap_rating_col}"
+                )
+                ca, cb = st.columns(2)
                 with ca:
-                    st.write("✅ Top (економія)")
+                    st.write(f"✅ Top (економія) по: {heatmap_rating_col}")
                     st.dataframe(
                         top_display[["Підрозділ", val_col]].set_index("Підрозділ")
                             .style.background_gradient(cmap="RdYlGn", subset=[val_col])
@@ -3687,7 +4315,7 @@ def main():
                         use_container_width=True
                     )
                 with cb:
-                    st.write("❌ Antitop (переліміт)")
+                    st.write(f"❌ Antitop (переліміт) по: {heatmap_rating_col}")
                     st.dataframe(
                         antitop_display[["Підрозділ", val_col]].set_index("Підрозділ")
                             .style.background_gradient(cmap="RdYlGn_r", subset=[val_col])
@@ -3695,19 +4323,48 @@ def main():
                             .format({val_col: fmt_abs}),
                         use_container_width=True
                     )
+
+                heatmap_export_blocks = [{
+                    "title": heatmap_title,
+                    "heat_df": heat_display,
+                    "top_df": top_display,
+                    "antitop_df": antitop_display,
+                    "val_col": val_col,
+                    "header_color": PURPLE,
+                    "percent": (mode == "Delta %"),
+                    "sheet_prefix": "Heatmap",
+                }]
             else:
                 st.info("Оберіть фактори групування в боковому меню для побудови Heatmap.")
 
             # ── % в ТО Heatmap ────────────────────────────────────────────────────────
             if col_ratio and show_ratio_heatmap:
                 st.markdown('<div class="block-sep-teal"></div>', unsafe_allow_html=True)
-                render_ratio_heatmap_section(
+                ratio_export_block = render_ratio_heatmap_section(
                     df, df_filtered, col_tt, col_article, col_month,
                     col_ratio, col_plf, articles_to_show, ratio_mode,
                     group_factors=group_factors,
                     col_division=col_division,
+                    col_year=col_year,
+                    show_download_button=False,
                 )
+                if ratio_export_block:
+                    heatmap_export_blocks.append(ratio_export_block)
 
+
+            if heatmap_export_blocks:
+                st.markdown('<div class="block-sep"></div>', unsafe_allow_html=True)
+                st.download_button(
+                    "⬇️ Скачати всі Heatmap-блоки в одному Excel",
+                    data=_heatmap_blocks_to_excel_bytes(
+                        heatmap_export_blocks,
+                        workbook_title="Всі Heatmap-блоки"
+                    ),
+                    file_name=_safe_xlsx_filename("all_heatmap_blocks"),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_all_heatmap_blocks_{mode}_{ratio_mode}",
+                    use_container_width=True,
+                )
     if active_tab == "📊 Статистика факторів":
             # ── Statistical factor analysis ──────────────────────────────────────────
             render_statistical_analysis_tab(
