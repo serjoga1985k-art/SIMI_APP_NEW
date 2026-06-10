@@ -242,6 +242,11 @@ def auto_map_columns(df):
             exact=["ЕЕ_кВт", "ЕЕ кВт", "EE_kWh", "EE kWh", "кВт", "kWh"],
             contains=["ее_квт", "ее квт", "квт", "kwh"]
         ),
+        "col_power": _find_col_by_keywords(
+            cols,
+            exact=["Потужність використання", "Середня потужність використання", "Power usage", "Usage power", "Power"],
+            contains=["потужність використання", "потуж", "power"]
+        ),
         "col_article": _find_col_by_keywords(
             cols,
             exact=["Стаття бюджету", "Статья бюджета", "Article"],
@@ -339,6 +344,42 @@ def _make_combo_col(df, factors):
         .str.strip(" |")
     )
     return combo, valid_factors
+
+
+def _calc_positive_power_mean_by_combo(df_src, combo_col, col_power):
+    """
+    Середня потужність використання по комбінації факторів.
+    У розрахунок потрапляють тільки непорожні числові значення > 0.
+    """
+    out_col = "Середня потужність використання"
+
+    if (
+        df_src is None
+        or df_src.empty
+        or not col_power
+        or col_power not in df_src.columns
+        or combo_col not in df_src.columns
+    ):
+        return pd.DataFrame(columns=[out_col])
+
+    tmp = df_src[[combo_col, col_power]].copy()
+    tmp["_power_usage_positive"] = pd.to_numeric(tmp[col_power], errors="coerce")
+    tmp = tmp[
+        tmp[combo_col].notna()
+        & tmp["_power_usage_positive"].notna()
+        & (tmp["_power_usage_positive"] > 0)
+    ]
+
+    if tmp.empty:
+        return pd.DataFrame(columns=[out_col])
+
+    return (
+        tmp
+        .groupby(combo_col, as_index=True, observed=True)["_power_usage_positive"]
+        .mean()
+        .rename(out_col)
+        .to_frame()
+    )
 
 
 def _smooth_chart_series(values, drop_ratio=0.72):
@@ -637,7 +678,8 @@ def analyze_factor_impact(df, df_filtered, col_tt, col_article, col_month,
 
 
 def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_month,
-                                  col_value, col_plf, selected_art, group_factors):
+                                  col_value, col_plf, selected_art, group_factors,
+                                  col_power=None):
     if not group_factors:
         st.info("Оберіть фактори групування для аналізу впливу.")
         return
@@ -709,6 +751,11 @@ def render_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_mont
     )
 
     pivot_impact = pivot_impact.join(summary_by_combo)
+
+    power_mean_by_combo = _calc_positive_power_mean_by_combo(all_fact, combo_col, col_power)
+    if not power_mean_by_combo.empty:
+        # Додаємо останньою колонкою, щоб одразу бачити середню потужність по вибраній комбінації факторів.
+        pivot_impact = pivot_impact.join(power_mean_by_combo)
 
     st.markdown(
         f"**Вплив комбінації факторів: {' + '.join(selected_factors)}**"
@@ -866,7 +913,8 @@ def analyze_ratio_factor_impact(df, df_filtered, col_tt, col_article, col_month,
 
 
 def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, col_month,
-                                         col_ratio, col_plf, selected_art, group_factors):
+                                         col_ratio, col_plf, selected_art, group_factors,
+                                         col_power=None):
     if not group_factors:
         st.info("Оберіть фактори групування для аналізу впливу.")
         return
@@ -940,9 +988,26 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
 
     pivot_impact = pivot_impact.join(summary_by_combo)
 
+    power_mean_by_combo = _calc_positive_power_mean_by_combo(all_fact, combo_col, col_power)
+    if not power_mean_by_combo.empty:
+        # Додаємо останньою колонкою; розрахунок ігнорує порожні, NaN та 0.
+        pivot_impact = pivot_impact.join(power_mean_by_combo)
+
     st.markdown(
         f"**Вплив комбінації факторів на % в ТО: {' + '.join(selected_factors)}**"
     )
+
+    ratio_percent_cols = [
+        c for c in pivot_impact.columns
+        if c in MONTHS_LIST or c in ["Середнє (загальне)", "Сума"]
+    ]
+    ratio_count_cols = [c for c in ["Всього записів"] if c in pivot_impact.columns]
+    ratio_power_cols = [c for c in ["Середня потужність використання"] if c in pivot_impact.columns]
+    ratio_format_map = {
+        **{c: (lambda v: f"{v:.2f}%" if pd.notna(v) else "") for c in ratio_percent_cols},
+        **{c: (lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "") for c in ratio_count_cols},
+        **{c: (lambda v: f"{v:,.0f}".replace(",", " ") if pd.notna(v) else "") for c in ratio_power_cols},
+    }
 
     st.dataframe(
         pivot_impact.style
@@ -951,7 +1016,7 @@ def render_ratio_factor_impact_analysis(df, df_filtered, col_tt, col_article, co
                 subset=[c for c in pivot_impact.columns if c in MONTHS_LIST]
             )
             .apply(_style_white_na, axis=None)
-            .format(lambda v: f"{v:.2f}%" if pd.notna(v) else "", na_rep=""),
+            .format(ratio_format_map, na_rep=""),
         use_container_width=True
     )
 
@@ -1110,7 +1175,8 @@ def _apply_combo_factor_filters(df_src, group_factors, key_prefix="combo_tab"):
 # ── Combined factor impact tab ────────────────────────────────────────────────
 def render_combined_factor_impact_tab(df, df_filtered, col_tt, col_article, col_month,
                                       col_value, col_ratio, col_plf,
-                                      articles_to_show, group_factors):
+                                      articles_to_show, group_factors,
+                                      col_power=None):
     st.markdown(f"""
     <div style="margin-top:10px;margin-bottom:8px;">
       <span style="background:{ORANGE};color:white;font-weight:700;padding:5px 14px;
@@ -1176,7 +1242,8 @@ def render_combined_factor_impact_tab(df, df_filtered, col_tt, col_article, col_
             col_value,
             col_plf,
             selected_combo_article,
-            group_factors
+            group_factors,
+            col_power=col_power
         )
 
     if col_ratio and analysis_kind in ("% в ТО", "Абсолютні + % в ТО"):
@@ -1190,7 +1257,8 @@ def render_combined_factor_impact_tab(df, df_filtered, col_tt, col_article, col_
             col_ratio,
             col_plf,
             selected_combo_article,
-            group_factors
+            group_factors,
+            col_power=col_power
         )
 
 
@@ -3735,6 +3803,13 @@ def main():
                 allow_empty=True,
                 help="Колонка з відсотком % в ТО. Оберіть '—', щоб приховати блок."
             )
+            col_power = _select_col(
+                "Потужність використання",
+                cols,
+                "col_power",
+                allow_empty=True,
+                help="Колонка для середньої потужності у вкладці «Комбінації факторів». У розрахунок беруться тільки значення > 0."
+            )
 
     with st.expander("🏪 Колонки шапки магазину", expanded=False):
         st.caption("Колонки шапки також утотожнюються автоматично, але їх можна змінити вручну.")
@@ -3868,7 +3943,7 @@ def main():
     # Одноразова підготовка важких колонок після вибору мапінгу.
     # Далі всі функції бачать готову _m і не перераховують місяці десятки разів.
     df = _prep(df, col_month)
-    _ensure_numeric_inplace(df, [col_value, col_kwh, col_ratio])
+    _ensure_numeric_inplace(df, [col_value, col_kwh, col_ratio, col_power])
 
     # ── apply_filters: df залишається ПОВНИМ (для норм), df_filtered — для відображення ──
     def apply_filters(d):
@@ -4080,6 +4155,7 @@ def main():
                 col_plf=col_plf,
                 articles_to_show=articles_to_show,
                 group_factors=group_factors,
+                col_power=col_power,
             )
 
     if active_tab == "📋 Зведені таблиці":
