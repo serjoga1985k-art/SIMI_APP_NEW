@@ -3904,7 +3904,11 @@ def main():
     mode       = st.sidebar.selectbox("Mode (Heatmap)",       ["Delta", "Delta %", "Z-score", "Fact", "Average"])
     ratio_mode = st.sidebar.selectbox("Mode (% в ТО Heatmap)", ["Delta", "Delta %", "Fact", "Average"], key="ratio_mode")
 
-    options = [c for c in df.columns if c not in [col_value, col_plf, col_article]]
+    # Важливо: технічні/числові показники не мають бути факторами групування.
+    # "Потужність використання" використовується тільки як окремий показник
+    # у вкладці "Комбінації факторів" і не повинна потрапляти в список факторів.
+    metric_cols_to_exclude = [col_value, col_plf, col_article, col_power]
+    options = [c for c in df.columns if c not in metric_cols_to_exclude]
     group_factors = st.sidebar.multiselect(
         "Фактори групування (Average/Std)",
         options=options,
